@@ -1,1 +1,9 @@
+venv/
 __pycache__/
+*.pyc
+*.json
+!package.json
+!requirements.txt
+.env
+firebase-sa.json
+*.tmp

@@ -1,0 +1,15 @@
+flask
+requests
+pandas
+numpy
+gunicorn
+google-generativeai
+google-auth>=2.0.0
+pandas-ta
+websocket-client
+fpdf2
+matplotlib
+mplfinance
+scipy
+lightgbm
+scikit-learn
