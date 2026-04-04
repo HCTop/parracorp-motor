@@ -1594,7 +1594,7 @@ def doc_pdf():
 def health():
     return jsonify({
         "status": "ok",
-        "version": "3.1",
+        "version": "3.2",
         "motor_activo": cfg.state.get("motor_activo", True),
         "ia_modo": cfg.state.get("ia_modo", "off"),
         "motor_ok": cfg.state.get("motor_ok", False),
