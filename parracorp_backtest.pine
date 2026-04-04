@@ -1,0 +1,503 @@
+// =============================================================================
+// ParraCorp Trading System v3.1 - Backtest Strategy
+// Replica del motor completo: 4 Engines + TQS + Divergencias + Regimen
+// =============================================================================
+// USO: Pegar en TradingView > Pine Script Editor > Add to chart
+// Timeframes recomendados: 15m, 1H, 4H
+// Pares recomendados: GBPJPY, GBPNZD, GBPAUD, EURJPY, EURNZD, GBPCAD,
+//                     XAUUSD, BTCUSD, NAS100, EURUSD, GBPUSD, USDJPY
+// =============================================================================
+
+//@version=6
+strategy("ParraCorp v3.1 Backtest", overlay=true, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=2, initial_capital=10000, currency=currency.USD,
+     commission_type=strategy.commission.cash_per_order, commission_value=0,
+     slippage=2, process_orders_on_close=true, calc_on_every_tick=false,
+     max_bars_back=500)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+grp_tqs = "Trade Quality Score"
+umbral_tqs      = input.float(0.65, "Umbral TQS (forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
+umbral_tqs_nofx = input.float(0.50, "Umbral TQS (no-forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
+is_forex        = input.bool(true, "Es par Forex?", group=grp_tqs)
+
+grp_risk = "Risk Management"
+riesgo_pct  = input.float(1.0, "Riesgo % por trade", minval=0.1, maxval=5.0, step=0.1, group=grp_risk)
+rr_minimo   = input.float(1.5, "R:R minimo", minval=1.0, maxval=5.0, step=0.1, group=grp_risk)
+max_ops     = input.int(3, "Max operaciones simultaneas", minval=1, maxval=10, group=grp_risk)
+trailing_type = input.string("breakeven", "Trailing Stop", options=["none", "breakeven", "atr1", "atr2"], group=grp_risk)
+
+grp_filter = "Filtros"
+use_session    = input.bool(true, "Filtrar por sesion (solo London+NY)", group=grp_filter)
+use_adx_filter = input.bool(true, "Filtro ADX > 15", group=grp_filter)
+use_ema200     = input.bool(true, "Filtro EMA200 (tendencia mayor)", group=grp_filter)
+use_divergence = input.bool(true, "Penalizar divergencias", group=grp_filter)
+
+grp_visual = "Visual"
+show_engines = input.bool(true, "Mostrar panel engines", group=grp_visual)
+show_sr      = input.bool(true, "Mostrar S/R fractales", group=grp_visual)
+show_ema     = input.bool(true, "Mostrar EMAs", group=grp_visual)
+
+// =============================================================================
+// INDICADORES BASE (replica de data_feed.py _compute_snapshot)
+// =============================================================================
+
+// EMAs
+ema9   = ta.ema(close, 9)
+ema20  = ta.ema(close, 20)
+ema35  = ta.ema(close, 35)
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+
+// RSI
+rsi14 = ta.rsi(close, 14)
+
+// Stochastic
+stoch_k = ta.stoch(close, high, low, 14)
+stoch_d = ta.sma(stoch_k, 3)
+
+// MACD
+[macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+
+// ADX + DI
+[di_plus, di_minus, adx_val] = ta.dmi(14, 14)
+
+// ATR
+atr14 = ta.atr(14)
+atr_pct = atr14 / close * 100
+atr_media20 = ta.sma(atr14, 20)
+vol_ratio = atr_media20 > 0 ? atr14 / atr_media20 : 1.0
+
+// Bollinger Bands
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, 20, 2)
+bb_range = bb_upper - bb_lower
+bb_distance = bb_range > 0 ? (close - (bb_lower + bb_range / 2)) / (bb_range / 2) : 0.0
+
+// Squeeze (BB < 3*ATR)
+squeeze = bb_range < (atr14 * 3.0)
+
+// Supertrend (factor 3, length 14 via HL2)
+hl2_val = (high + low) / 2
+st_up = hl2_val + 3.0 * atr14
+st_lo = hl2_val - 3.0 * atr14
+
+var string st_dir = "UP"
+var float st_line = 0.0
+
+if st_dir == "UP"
+    if close < st_lo
+        st_dir := "DOWN"
+        st_line := st_up
+    else
+        st_line := st_lo
+else
+    if close > st_up
+        st_dir := "UP"
+        st_line := st_lo
+    else
+        st_line := st_up
+
+// Z-Score (50 periodos)
+mean50 = ta.sma(close, 50)
+std50 = ta.stdev(close, 50)
+zscore = std50 > 0 ? (close - mean50) / std50 : 0.0
+
+// Momentum (10)
+mom10 = ta.mom(close, 10)
+
+// EMA 35/50 Cross
+ema35_cross_up   = ta.crossover(ema35, ema50)
+ema35_cross_down = ta.crossunder(ema35, ema50)
+
+// Ichimoku
+tenkan  = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
+kijun   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+span_a  = (tenkan + kijun) / 2
+span_b  = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+
+// =============================================================================
+// MOTOR 1: MOMENTUM (signal_engines.py motor_momentum)
+// =============================================================================
+slope_period = 5
+ema20_slope  = (ema20 - ema20[slope_period]) / slope_period
+price_mom    = close - close[slope_period]
+slope_norm   = close != 0 ? ema20_slope / close : 0
+mom_norm     = close != 0 ? price_mom / close : 0
+mom_raw      = math.abs(slope_norm * mom_norm) * 1e6
+
+// Normalizar con percentil dinamico (P90 de los ultimos 100 periodos)
+var float mom_p90 = 1.0
+mom_arr = ta.percentile_nearest_rank(mom_raw, 100, 90)
+mom_p90 := mom_arr > 0 ? mom_arr : 1.0
+m_score = math.min(mom_raw / math.max(mom_p90, 1e-9), 1.0)
+
+string m_dir = "NEUTRAL"
+if ema20_slope > 0 and price_mom > 0
+    m_dir := "BUY"
+else if ema20_slope < 0 and price_mom < 0
+    m_dir := "SELL"
+
+// =============================================================================
+// MOTOR 2: MEAN REVERSION (signal_engines.py motor_mean_reversion)
+// =============================================================================
+rsi_ext = rsi14 > 70 ? math.max(0, (rsi14 - 70) / 30) : rsi14 < 30 ? math.max(0, (30 - rsi14) / 30) : 0.0
+z_n = math.min(math.abs(zscore) / 3.0, 1.0)
+bb_n = math.min(math.abs(bb_distance), 1.0)
+
+float r_score = 0.0
+string r_dir = "NEUTRAL"
+if math.abs(zscore) >= 1.0 or rsi_ext > 0 or math.abs(bb_distance) >= 0.5
+    r_score := 0.4 * z_n + 0.35 * bb_n + 0.25 * rsi_ext
+    if math.abs(zscore) >= 1.0
+        r_dir := zscore > 0 ? "SELL" : "BUY"
+    else if rsi14 > 70
+        r_dir := "SELL"
+    else if rsi14 < 30
+        r_dir := "BUY"
+    else
+        r_dir := zscore > 0 ? "SELL" : "BUY"
+
+// =============================================================================
+// MOTOR 3: CURRENCY STRENGTH (simplificado - sin datos multi-par)
+// En backtest single-chart no hay currency strength real.
+// Usamos proxy: distancia relativa al EMA20 como fuerza.
+// =============================================================================
+cs_proxy = close != 0 ? (close - ema20) / close : 0.0
+float s_score = 0.0
+string s_dir = "NEUTRAL"
+if is_forex
+    s_score := math.min(math.abs(cs_proxy) * 100, 1.0)  // proxy
+    s_dir := cs_proxy > 0.001 ? "BUY" : cs_proxy < -0.001 ? "SELL" : "NEUTRAL"
+
+// =============================================================================
+// MOTOR 4: VOLATILITY BREAKOUT (signal_engines.py motor_breakout)
+// =============================================================================
+expansion = vol_ratio > 1.0 ? math.min((vol_ratio - 1.0) / 0.5, 1.0) : 0.0
+adx_n = adx_val > 0 ? math.min(adx_val / 50.0, 1.0) : 0.0
+
+float b_score = 0.0
+string b_dir = "NEUTRAL"
+if squeeze
+    b_score := 0.5 * expansion + 0.3 * adx_n + 0.2
+    b_dir := "BREAKOUT"
+else if vol_ratio > 1.2 and adx_val > 25
+    b_score := 0.5 * expansion + 0.5 * adx_n
+    b_dir := "BREAKOUT"
+else if vol_ratio > 1.05 and adx_val > 18
+    b_score := 0.4 * expansion + 0.4 * adx_n
+    b_dir := "BREAKOUT"
+else if adx_val > 25
+    b_score := 0.3 * adx_n
+    b_dir := "BREAKOUT"
+b_score := math.min(b_score, 1.0)
+
+// =============================================================================
+// REGIMEN DETECTOR (regime_detector.py)
+// =============================================================================
+string regimen = "NORMAL"
+if adx_val > 25 and vol_ratio > 1.3
+    regimen := "TRENDING_VOLATILE"
+else if adx_val > 25 and vol_ratio <= 1.3
+    regimen := "TRENDING_CALM"
+else if adx_val < 18 and vol_ratio < 0.8
+    regimen := "RANGING"
+else if adx_val < 15 and vol_ratio < 0.7
+    regimen := "CHOPPY"
+
+// =============================================================================
+// TRADE QUALITY SCORE (TQS)
+// =============================================================================
+// Pesos por regimen (replica signal_engines.py)
+float w_mom = 0.40
+float w_rev = 0.20
+float w_str = is_forex ? 0.30 : 0.00
+float w_brk = is_forex ? 0.10 : 0.30
+
+if regimen == "TRENDING_VOLATILE"
+    w_mom := is_forex ? 0.60 : 0.65
+    w_rev := is_forex ? 0.05 : 0.10
+    w_str := is_forex ? 0.30 : 0.00
+    w_brk := is_forex ? 0.05 : 0.25
+else if regimen == "TRENDING_CALM"
+    w_mom := is_forex ? 0.50 : 0.55
+    w_rev := is_forex ? 0.10 : 0.20
+    w_str := is_forex ? 0.30 : 0.00
+    w_brk := is_forex ? 0.10 : 0.25
+else if regimen == "RANGING"
+    w_mom := is_forex ? 0.10 : 0.15
+    w_rev := is_forex ? 0.50 : 0.55
+    w_str := is_forex ? 0.30 : 0.00
+    w_brk := is_forex ? 0.10 : 0.30
+
+float tqs = regimen == "CHOPPY" ? 0.0 : w_mom * m_score + w_rev * r_score + w_str * s_score + w_brk * b_score
+
+// =============================================================================
+// DIVERGENCIAS (signal_engines.py detectar_divergencias)
+// =============================================================================
+lookback_div = 5
+precio_max_rec = ta.highest(close, lookback_div)
+precio_min_rec = ta.lowest(close, lookback_div)
+precio_max_ant = ta.highest(close[lookback_div], lookback_div)
+precio_min_ant = ta.lowest(close[lookback_div], lookback_div)
+rsi_max_rec = ta.highest(rsi14, lookback_div)
+rsi_min_rec = ta.lowest(rsi14, lookback_div)
+rsi_max_ant = ta.highest(rsi14[lookback_div], lookback_div)
+rsi_min_ant = ta.lowest(rsi14[lookback_div], lookback_div)
+
+bool bearish_div = precio_max_rec > precio_max_ant and rsi_max_rec < rsi_max_ant
+bool bullish_div = precio_min_rec < precio_min_ant and rsi_min_rec > rsi_min_ant
+
+// Penalizacion divergencias
+if use_divergence
+    if bearish_div and m_dir == "BUY"
+        tqs := tqs * 0.7
+    if bullish_div and m_dir == "SELL"
+        tqs := tqs * 0.7
+
+// =============================================================================
+// DIRECCION CONSENSUS
+// =============================================================================
+float buy_score_total  = (m_dir == "BUY" ? m_score : 0) + (r_dir == "BUY" ? r_score : 0) + (s_dir == "BUY" ? s_score : 0)
+float sell_score_total = (m_dir == "SELL" ? m_score : 0) + (r_dir == "SELL" ? r_score : 0) + (s_dir == "SELL" ? s_score : 0)
+
+string direccion = "NEUTRAL"
+if buy_score_total > sell_score_total and buy_score_total > 0.3
+    direccion := "BUY"
+else if sell_score_total > buy_score_total and sell_score_total > 0.3
+    direccion := "SELL"
+
+// =============================================================================
+// SOPORTE / RESISTENCIA FRACTAL
+// =============================================================================
+fractal_hi = ta.pivothigh(high, 5, 5)
+fractal_lo = ta.pivotlow(low, 5, 5)
+
+var float sr_res1 = na
+var float sr_res2 = na
+var float sr_sup1 = na
+var float sr_sup2 = na
+
+if not na(fractal_hi)
+    sr_res2 := sr_res1
+    sr_res1 := fractal_hi
+if not na(fractal_lo)
+    sr_sup2 := sr_sup1
+    sr_sup1 := fractal_lo
+
+// =============================================================================
+// FILTROS DE CALIDAD
+// =============================================================================
+// Sesion (UTC): London 07-16, NY 12-21
+hour_utc = hour(time, "UTC")
+in_session = not use_session or (hour_utc >= 7 and hour_utc <= 21)
+
+// ADX minimo
+adx_ok = not use_adx_filter or adx_val > 15
+
+// EMA200 concordancia
+ema200_ok = not use_ema200 or (direccion == "BUY" and close > ema200) or (direccion == "SELL" and close < ema200) or na(ema200)
+
+// Umbral TQS
+float umbral = is_forex ? umbral_tqs : umbral_tqs_nofx
+bool pasa_tqs = tqs >= umbral and direccion != "NEUTRAL"
+
+// EMA35/50 cross bonus
+if ema35_cross_up and direccion == "BUY"
+    tqs := math.min(tqs * 1.15, 1.0)  // bonus golden cross
+if ema35_cross_down and direccion == "SELL"
+    tqs := math.min(tqs * 1.15, 1.0)  // bonus death cross
+
+// =============================================================================
+// SL / TP CALCULATION (replica brain.py)
+// =============================================================================
+float sl_distance = atr14 * 1.5
+float tp_distance = sl_distance * rr_minimo
+
+// Ajuste S/R: SL detras del soporte/resistencia mas cercano
+float sl_price = na
+float tp_price = na
+
+if direccion == "BUY"
+    sl_price := close - sl_distance
+    tp_price := close + tp_distance
+    // Ajustar SL a soporte cercano
+    if not na(sr_sup1) and sr_sup1 < close and sr_sup1 > sl_price * 0.998
+        sl_price := sr_sup1 - atr14 * 0.2
+    // Ajustar TP a resistencia cercana
+    if not na(sr_res1) and sr_res1 > close and sr_res1 > tp_price * 0.95
+        tp_price := sr_res1 - atr14 * 0.1
+else if direccion == "SELL"
+    sl_price := close + sl_distance
+    tp_price := close - tp_distance
+    // Ajustar SL a resistencia cercana
+    if not na(sr_res1) and sr_res1 > close and sr_res1 < sl_price * 1.002
+        sl_price := sr_res1 + atr14 * 0.2
+    // Ajustar TP a soporte cercano
+    if not na(sr_sup1) and sr_sup1 < close and sr_sup1 < tp_price * 1.05
+        tp_price := sr_sup1 + atr14 * 0.1
+
+// R:R final check
+float rr_final = sl_price != 0 ? math.abs(tp_price - close) / math.abs(close - sl_price) : 0
+bool rr_ok = rr_final >= rr_minimo
+
+// =============================================================================
+// SEÑALES DE ENTRADA
+// =============================================================================
+bool signal_buy  = pasa_tqs and direccion == "BUY" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
+bool signal_sell = pasa_tqs and direccion == "SELL" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
+
+// =============================================================================
+// TRAILING STOP LOGIC
+// =============================================================================
+var float trail_sl = na
+var float entry_price = na
+var string trade_dir = "NONE"
+
+if signal_buy and strategy.position_size == 0
+    strategy.entry("BUY", strategy.long)
+    entry_price := close
+    trade_dir := "BUY"
+    trail_sl := sl_price
+    strategy.exit("TP/SL", "BUY", stop=sl_price, limit=tp_price)
+
+if signal_sell and strategy.position_size == 0
+    strategy.entry("SELL", strategy.short)
+    entry_price := close
+    trade_dir := "SELL"
+    trail_sl := sl_price
+    strategy.exit("TP/SL", "SELL", stop=sl_price, limit=tp_price)
+
+// Trailing stop updates
+if strategy.position_size > 0 and trailing_type != "none"
+    if trailing_type == "breakeven"
+        // Mover SL a entrada cuando el precio alcanza 50% del TP
+        if trade_dir == "BUY" and not na(entry_price) and not na(tp_price)
+            half_tp = entry_price + (tp_price - entry_price) * 0.5
+            if close >= half_tp
+                trail_sl := math.max(nz(trail_sl), entry_price)
+                strategy.exit("TP/SL", "BUY", stop=trail_sl, limit=tp_price)
+        if trade_dir == "SELL" and not na(entry_price) and not na(tp_price)
+            half_tp = entry_price - (entry_price - tp_price) * 0.5
+            if close <= half_tp
+                trail_sl := math.min(nz(trail_sl, 1e10), entry_price)
+                strategy.exit("TP/SL", "SELL", stop=trail_sl, limit=tp_price)
+    else if trailing_type == "atr1"
+        // SL sigue al precio a 1 ATR de distancia
+        if trade_dir == "BUY"
+            new_sl = close - atr14
+            trail_sl := math.max(nz(trail_sl), new_sl)
+            strategy.exit("TP/SL", "BUY", stop=trail_sl, limit=tp_price)
+        if trade_dir == "SELL"
+            new_sl = close + atr14
+            trail_sl := math.min(nz(trail_sl, 1e10), new_sl)
+            strategy.exit("TP/SL", "SELL", stop=trail_sl, limit=tp_price)
+    else if trailing_type == "atr2"
+        // SL sigue cada +0.5 ATR agresivo
+        if trade_dir == "BUY"
+            new_sl = close - atr14 * 0.5
+            trail_sl := math.max(nz(trail_sl), new_sl)
+            strategy.exit("TP/SL", "BUY", stop=trail_sl, limit=tp_price)
+        if trade_dir == "SELL"
+            new_sl = close + atr14 * 0.5
+            trail_sl := math.min(nz(trail_sl, 1e10), new_sl)
+            strategy.exit("TP/SL", "SELL", stop=trail_sl, limit=tp_price)
+
+// Reset on flat
+if strategy.position_size == 0
+    trail_sl := na
+    entry_price := na
+    trade_dir := "NONE"
+
+// =============================================================================
+// VISUALIZACION
+// =============================================================================
+
+// EMAs
+plot(show_ema ? ema9 : na, "EMA 9", color=color.new(color.yellow, 50), linewidth=1)
+plot(show_ema ? ema20 : na, "EMA 20", color=color.new(color.orange, 50), linewidth=1)
+plot(show_ema ? ema35 : na, "EMA 35", color=color.new(color.blue, 50), linewidth=1)
+plot(show_ema ? ema50 : na, "EMA 50", color=color.new(color.purple, 50), linewidth=1)
+plot(show_ema ? ema200 : na, "EMA 200", color=color.new(color.white, 30), linewidth=2)
+
+// Supertrend line
+st_color = st_dir == "UP" ? color.new(color.green, 30) : color.new(color.red, 30)
+plot(st_line, "Supertrend", color=st_color, linewidth=2, style=plot.style_linebr)
+
+// S/R levels
+plot(show_sr and not na(sr_res1) ? sr_res1 : na, "R1", color=color.new(color.red, 60), style=plot.style_circles, linewidth=2)
+plot(show_sr and not na(sr_sup1) ? sr_sup1 : na, "S1", color=color.new(color.green, 60), style=plot.style_circles, linewidth=2)
+
+// Entry arrows
+plotshape(signal_buy, "BUY Signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(signal_sell, "SELL Signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+
+// EMA 35/50 Cross markers
+plotshape(ema35_cross_up, "Golden Cross 35/50", shape.diamond, location.belowbar, color.new(color.lime, 0), size=size.tiny)
+plotshape(ema35_cross_down, "Death Cross 35/50", shape.diamond, location.abovebar, color.new(color.fuchsia, 0), size=size.tiny)
+
+// Divergence markers
+plotshape(bearish_div and show_engines, "Bearish Div", shape.xcross, location.abovebar, color.new(color.orange, 20), size=size.tiny)
+plotshape(bullish_div and show_engines, "Bullish Div", shape.xcross, location.belowbar, color.new(color.aqua, 20), size=size.tiny)
+
+// Background: regimen
+reg_color = regimen == "TRENDING_VOLATILE" ? color.new(color.green, 95) :
+            regimen == "TRENDING_CALM" ? color.new(color.teal, 95) :
+            regimen == "RANGING" ? color.new(color.yellow, 95) :
+            regimen == "CHOPPY" ? color.new(color.red, 95) : na
+bgcolor(reg_color, title="Regimen Background")
+
+// Squeeze indicator
+bgcolor(squeeze ? color.new(color.orange, 90) : na, title="Squeeze Active")
+
+// =============================================================================
+// INFO TABLE (Panel de engines)
+// =============================================================================
+if show_engines and barstate.islast
+    var table panel = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 20), border_width=1)
+    table.cell(panel, 0, 0, "TQS", text_color=color.white, text_size=size.small)
+    tqs_col = tqs >= umbral ? color.green : color.red
+    table.cell(panel, 1, 0, str.tostring(tqs, "#.###"), text_color=tqs_col, text_size=size.small)
+
+    table.cell(panel, 0, 1, "Momentum", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 1, str.tostring(m_score, "#.##") + " " + m_dir, text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 2, "Reversion", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 2, str.tostring(r_score, "#.##") + " " + r_dir, text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 3, "Strength", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 3, str.tostring(s_score, "#.##") + " " + s_dir, text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 4, "Breakout", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 4, str.tostring(b_score, "#.##") + " " + b_dir, text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 5, "Regimen", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 5, regimen, text_color=color.yellow, text_size=size.tiny)
+
+    table.cell(panel, 0, 6, "Direccion", text_color=color.gray, text_size=size.tiny)
+    dir_col = direccion == "BUY" ? color.green : direccion == "SELL" ? color.red : color.gray
+    table.cell(panel, 1, 6, direccion, text_color=dir_col, text_size=size.tiny)
+
+    table.cell(panel, 0, 7, "RSI", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 7, str.tostring(rsi14, "#.#"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 8, "ADX", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 8, str.tostring(adx_val, "#.#"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 9, "ATR%", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 9, str.tostring(atr_pct, "#.##") + "%", text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 10, "Vol Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 10, str.tostring(vol_ratio, "#.##"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 11, "Squeeze", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 11, squeeze ? "SI" : "NO", text_color=squeeze ? color.orange : color.gray, text_size=size.tiny)
+
+// =============================================================================
+// ALERTAS
+// =============================================================================
+alertcondition(signal_buy, "ParraCorp BUY", "ParraCorp: Senal BUY - TQS={{plot_0}}")
+alertcondition(signal_sell, "ParraCorp SELL", "ParraCorp: Senal SELL - TQS={{plot_0}}")
+alertcondition(ema35_cross_up, "Golden Cross 35/50", "EMA35 cruza por encima de EMA50")
+alertcondition(ema35_cross_down, "Death Cross 35/50", "EMA35 cruza por debajo de EMA50")
