@@ -280,25 +280,43 @@ def send_history_summary(trades, period_label=""):
         f"",
     ]
 
-    # List individual trades
-    for t in closed[:20]:
+    # List ALL trades, splitting into multiple messages if needed
+    trade_lines = []
+    for t in closed:
         sym = t.get("symbol", "?")
         action = t.get("action", "?")
         pnl = t.get("pnl_usd", 0)
-        status = t.get("status", "")
         sid = t.get("id", "")
         emoji = "\u2705" if pnl > 0 else "\u274C"
-        lines.append(f"{emoji} {sid} {action} {sym} {pnl:+.2f}\u20ac")
+        trade_lines.append(f"{emoji} {sid} {action} {sym} {pnl:+.2f}\u20ac")
 
-    if len(closed) > 20:
-        lines.append(f"... y {len(closed)-20} mas")
+    footer = [
+        f"",
+        f"{pnl_emoji} PnL Total: <b>{sign}{total_pnl:.2f}\u20ac</b>",
+        f"",
+        f"\U0001F916 ParraCorp Motor",
+    ]
 
-    lines.append(f"")
-    lines.append(f"{pnl_emoji} PnL Total: <b>{sign}{total_pnl:.2f}\u20ac</b>")
-    lines.append(f"")
-    lines.append(f"\U0001F916 ParraCorp Motor")
-
-    _send_async("\n".join(lines))
+    # Split into chunks to stay under Telegram 4096 char limit
+    chunk_size = 40  # trades per message
+    if len(trade_lines) <= chunk_size:
+        lines.extend(trade_lines)
+        lines.extend(footer)
+        _send_async("\n".join(lines))
+    else:
+        # First message: header + first chunk
+        lines.extend(trade_lines[:chunk_size])
+        _send_async("\n".join(lines))
+        # Middle messages: remaining chunks
+        for i in range(chunk_size, len(trade_lines), chunk_size):
+            chunk = trade_lines[i:i + chunk_size]
+            part_num = i // chunk_size + 1
+            total_parts = (len(trade_lines) + chunk_size - 1) // chunk_size
+            msg_lines = [f"\U0001F4CA <b>HISTORIAL {period_label.upper()} ({part_num+1}/{total_parts})</b>", ""]
+            msg_lines.extend(chunk)
+            if i + chunk_size >= len(trade_lines):
+                msg_lines.extend(footer)
+            _send_async("\n".join(msg_lines))
     mlog("TG", f"Historial {period_label} enviado ({len(closed)} trades)")
 
 

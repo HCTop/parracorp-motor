@@ -254,13 +254,31 @@ def send_history_summary(trades, period_label=""):
         f"• W/L: {len(wins)}W / {len(losses)}L | WR: {wr:.0f}%",
         f"",
     ]
-    for t in closed[:20]:
+    trade_lines = []
+    for t in closed:
         emoji = "✅" if t.get("pnl_usd", 0) > 0 else "❌"
-        lines.append(f"{emoji} {t.get('id','')} {t.get('action','')} {t.get('symbol','')} {t.get('pnl_usd',0):+.2f}\u20ac")
-    if len(closed) > 20:
-        lines.append(f"... y {len(closed)-20} mas")
-    lines.append(f"\n💰 PnL Total: *{sign}{total_pnl:.2f}\u20ac*\n\n🤖 ParraCorp Motor")
-    _send_async("\n".join(lines))
+        trade_lines.append(f"{emoji} {t.get('id','')} {t.get('action','')} {t.get('symbol','')} {t.get('pnl_usd',0):+.2f}\u20ac")
+
+    footer = f"\n💰 PnL Total: *{sign}{total_pnl:.2f}\u20ac*\n\n🤖 ParraCorp Motor"
+
+    # Split into chunks to stay under message limits
+    chunk_size = 40
+    if len(trade_lines) <= chunk_size:
+        lines.extend(trade_lines)
+        lines.append(footer)
+        _send_async("\n".join(lines))
+    else:
+        lines.extend(trade_lines[:chunk_size])
+        _send_async("\n".join(lines))
+        for i in range(chunk_size, len(trade_lines), chunk_size):
+            chunk = trade_lines[i:i + chunk_size]
+            part_num = i // chunk_size + 1
+            total_parts = (len(trade_lines) + chunk_size - 1) // chunk_size
+            msg_lines = [f"📊 *HISTORIAL {period_label.upper()} ({part_num+1}/{total_parts})*", ""]
+            msg_lines.extend(chunk)
+            if i + chunk_size >= len(trade_lines):
+                msg_lines.append(footer)
+            _send_async("\n".join(msg_lines))
 
 
 def send_custom(text):
