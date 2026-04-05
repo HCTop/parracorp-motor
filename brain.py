@@ -739,7 +739,12 @@ JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"r
 
 def _consensus_vote(stats_result, groq_result, gemini_result):
     """
-    Combina 3 votos. Necesita 2/3 de acuerdo.
+    Stats manda, IA solo puede vetar.
+
+    Logica:
+    - Si Stats dice WAIT → WAIT siempre (IA no puede añadir trades)
+    - Si Stats dice BUY/SELL → necesita que al menos 1 IA confirme
+    - Si ambas IA contradicen a Stats → WAIT (veto)
 
     Returns: dict con action, confidence, sl_atr, tp_atr, risk_pct, trailing, reason, votos
     """
@@ -766,29 +771,58 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
     else:
         votos.append(("GEMINI", "WAIT", 0))
 
-    # Contar votos por accion
-    buy_count = sum(1 for _, a, _ in votos if a == "BUY")
-    sell_count = sum(1 for _, a, _ in votos if a == "SELL")
-    wait_count = sum(1 for _, a, _ in votos if a == "WAIT")
+    v_groq = votos[1][1]
+    c_groq = votos[1][2]
+    v_gemini = votos[2][1]
+    c_gemini = votos[2][2]
 
-    # 2/3 necesarios
-    if buy_count >= 2:
-        final_action = "BUY"
-    elif sell_count >= 2:
-        final_action = "SELL"
+    # Stats manda: si Stats dice WAIT, no se opera
+    if v_stats == "WAIT":
+        final_action = "WAIT"
+        final_confidence = c_stats
+    elif v_stats in ("BUY", "SELL"):
+        # Stats quiere operar — necesita confirmacion de al menos 1 IA
+        ia_confirms = 0
+        ia_vetoes = 0
+        # IA confirma si dice la misma direccion O si dice WAIT (no contradice)
+        # IA veta si dice la direccion OPUESTA
+        for name, v_ia, c_ia in [("GROQ", v_groq, c_groq), ("GEMINI", v_gemini, c_gemini)]:
+            if v_ia == v_stats:
+                ia_confirms += 1  # Misma direccion: confirma
+            elif v_ia == "WAIT":
+                pass  # Neutral: ni confirma ni veta
+            else:
+                ia_vetoes += 1  # Direccion opuesta: veto fuerte
+
+        if ia_vetoes >= 2:
+            # Ambas IA dicen lo contrario → veto total
+            mlog("BRAIN", f"VETO: ambas IA contradicen Stats ({v_stats})")
+            final_action = "WAIT"
+            final_confidence = 0
+        elif ia_confirms >= 1:
+            # Al menos 1 IA confirma → operar
+            final_action = v_stats
+            confs = [c_stats]
+            if v_groq == v_stats:
+                confs.append(c_groq)
+            if v_gemini == v_stats:
+                confs.append(c_gemini)
+            final_confidence = int(sum(confs) / len(confs))
+        elif ia_vetoes == 1:
+            # 1 IA contradice, la otra neutral → operar con menos confianza
+            final_action = v_stats
+            final_confidence = max(c_stats - 15, 50)
+        else:
+            # Ambas IA dicen WAIT (neutral) → confiar en Stats
+            final_action = v_stats
+            final_confidence = c_stats
     else:
         final_action = "WAIT"
-
-    # Confidence = promedio de los votos concordantes
-    concordantes = [(n, c) for n, a, c in votos if a == final_action]
-    if concordantes:
-        final_confidence = int(sum(c for _, c in concordantes) / len(concordantes))
-    else:
         final_confidence = 0
 
-    # Gate: confianza minima 65%
-    if final_action in ("BUY", "SELL") and final_confidence < 65:
-        mlog("BRAIN", f"Confianza {final_confidence}% < 65% minimo -> WAIT")
+    # Gate minimo
+    if final_action in ("BUY", "SELL") and final_confidence < 50:
+        mlog("BRAIN", f"Confianza {final_confidence}% < 50% -> WAIT")
         final_action = "WAIT"
 
     # Parametros: prioridad Gemini > Groq > Stats
