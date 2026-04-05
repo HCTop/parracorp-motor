@@ -942,8 +942,8 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         result.update({
             "action": consensus["action"],
             "confidence": consensus["confidence"],
-            "sl_atr_mult": consensus["sl_atr"],
-            "tp_atr_mult": consensus["tp_atr"],
+            "sl_atr_mult": 1.5,   # SL/TP fijos — la IA decide direccion, no gestion de riesgo
+            "tp_atr_mult": 3.0,
             "risk_pct": consensus["risk_pct"],
             "trailing_stop": consensus["trailing_stop"],
             "reason": consensus["reason"],
