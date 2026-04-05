@@ -859,7 +859,7 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
         "trailing_stop": trailing,
         "reason": " | ".join(reason_parts) + "\n" + reason_detail,
         "votos": votos_info,
-        "consensus": f"{max(buy_count, sell_count, wait_count)}/3",
+        "consensus": f"{sum(1 for _, a, _ in votos if a == final_action)}/3",
     }
 
 
