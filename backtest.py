@@ -366,37 +366,51 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
         groq_result = future_groq.result()
         gemini_result = future_gemini.result()
 
-    # Consensus solo Groq + Gemini (2 votos, sin Stats)
+    # Consensus Groq + Gemini
     g_action = groq_result.get("action", "WAIT") if groq_result else "WAIT"
     g_conf = groq_result.get("confidence", 0) if groq_result else 0
     m_action = gemini_result.get("action", "WAIT") if gemini_result else "WAIT"
     m_conf = gemini_result.get("confidence", 0) if gemini_result else 0
 
-    # Si ambos coinciden en BUY o SELL → ejecutar
-    if g_action == m_action and g_action in ("BUY", "SELL"):
-        final_action = g_action
-        final_conf = int((g_conf + m_conf) / 2)
-    # Si uno dice BUY/SELL con alta confianza y el otro WAIT → ejecutar si conf >= 80
-    elif g_action in ("BUY", "SELL") and g_conf >= 80 and m_action == "WAIT":
-        final_action = g_action
-        final_conf = g_conf
-    elif m_action in ("BUY", "SELL") and m_conf >= 80 and g_action == "WAIT":
-        final_action = m_action
-        final_conf = m_conf
-    else:
-        final_action = "WAIT"
-        final_conf = max(g_conf, m_conf)
+    # Determinar accion: priorizar la IA que opera si alguna coincide con engines
+    ia_actions = []
+    if g_action in ("BUY", "SELL"):
+        ia_actions.append(("Groq", g_action, g_conf, groq_result))
+    if m_action in ("BUY", "SELL"):
+        ia_actions.append(("Gemini", m_action, m_conf, gemini_result))
 
-    # Gate minimo de confianza
-    if final_action in ("BUY", "SELL") and final_conf < 70:
-        final_action = "WAIT"
+    final_action = "WAIT"
+    final_conf = 0
+    best_params = gemini_result or groq_result or {}
 
-    # Parametros SL/TP
-    params = gemini_result or groq_result or {}
-    sl_mult = params.get("sl_atr", 1.5)
-    tp_mult = params.get("tp_atr", 3.0)
-    risk_pct = min(max(params.get("risk_pct", 1.0), 0.5), 2.0)
-    trailing = params.get("trailing_stop", "breakeven")
+    if len(ia_actions) == 2 and ia_actions[0][1] == ia_actions[1][1]:
+        # Ambas coinciden en la misma direccion
+        final_action = ia_actions[0][1]
+        final_conf = int((ia_actions[0][2] + ia_actions[1][2]) / 2)
+        best_params = ia_actions[1][3]  # Gemini tiene mejores params
+    elif len(ia_actions) >= 1:
+        # Al menos 1 IA dice operar - usar la de mayor confianza si coincide con engines
+        best = max(ia_actions, key=lambda x: x[2])
+        if best[1] == direction and best[2] >= 70:
+            final_action = best[1]
+            final_conf = best[2]
+            best_params = best[3]
+        elif best[2] >= 85:
+            # Confianza muy alta, confiar en la IA
+            final_action = best[1]
+            final_conf = best[2]
+            best_params = best[3]
+
+    # Si ambas IA dicen WAIT pero engines tiene direccion clara, usar engines
+    if final_action == "WAIT" and direction in ("BUY", "SELL") and tqs >= 0.70:
+        final_action = direction
+        final_conf = int(tqs * 100)
+
+    # Parametros SL/TP de la IA o defaults
+    sl_mult = best_params.get("sl_atr", 1.5)
+    tp_mult = best_params.get("tp_atr", 3.0)
+    risk_pct = min(max(best_params.get("risk_pct", 1.0), 0.5), 2.0)
+    trailing = best_params.get("trailing_stop", "breakeven")
 
     if final_action == "BUY":
         sl = precio - atr * sl_mult
