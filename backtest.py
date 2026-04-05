@@ -87,25 +87,57 @@ def download_data(symbol, tf_minutes, days):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def compute_indicators(df):
-    """Calcula todos los indicadores tecnicos sobre el DataFrame."""
-    try:
-        import pandas_ta as ta
-    except ImportError:
-        print("Instalando pandas-ta...")
-        os.system(f"{sys.executable} -m pip install pandas-ta -q")
-        import pandas_ta as ta
+    """Calcula todos los indicadores tecnicos sobre el DataFrame (sin pandas-ta)."""
+    c = df["close"]
+    h = df["high"]
+    l = df["low"]
 
-    df.ta.rsi(length=14, append=True)
-    df.ta.stoch(k=14, d=3, smooth_k=3, append=True)
-    df.ta.macd(fast=12, slow=26, signal=9, append=True)
-    df.ta.adx(length=14, append=True)
-    df.ta.bbands(length=20, std=2, append=True)
-    df.ta.atr(length=14, append=True)
-    df.ta.ema(length=9, append=True)
-    df.ta.ema(length=20, append=True)
-    df.ta.ema(length=35, append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.ema(length=200, append=True)
+    # RSI 14
+    delta = c.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["RSI_14"] = 100 - (100 / (1 + rs))
+
+    # Stochastic %K/%D
+    low14 = l.rolling(14).min()
+    high14 = h.rolling(14).max()
+    raw_k = 100 * (c - low14) / (high14 - low14).replace(0, np.nan)
+    df["STOCHk_14_3_3"] = raw_k.rolling(3).mean()
+    df["STOCHd_14_3_3"] = df["STOCHk_14_3_3"].rolling(3).mean()
+
+    # MACD
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    df["MACD_12_26_9"] = ema12 - ema26
+    df["MACDs_12_26_9"] = df["MACD_12_26_9"].ewm(span=9, adjust=False).mean()
+    df["MACDh_12_26_9"] = df["MACD_12_26_9"] - df["MACDs_12_26_9"]
+
+    # ADX
+    plus_dm = h.diff()
+    minus_dm = -l.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    plus_di = 100 * plus_dm.rolling(14).mean() / atr14.replace(0, np.nan)
+    minus_di = 100 * minus_dm.rolling(14).mean() / atr14.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    df["ADX_14"] = dx.rolling(14).mean()
+
+    # Bollinger Bands
+    sma20 = c.rolling(20).mean()
+    std20 = c.rolling(20).std()
+    df["BBU_20_2.0"] = sma20 + 2 * std20
+    df["BBL_20_2.0"] = sma20 - 2 * std20
+
+    # ATR
+    df["ATRr_14"] = atr14
+
+    # EMAs
+    for span in [9, 20, 35, 50, 200]:
+        df[f"EMA_{span}"] = c.ewm(span=span, adjust=False).mean()
+
     if "volume" in df.columns:
         df["volume_sma"] = df["volume"].rolling(20).mean()
     return df
@@ -280,9 +312,11 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
 
     context = {
         "signals_active": [],
-        "session": "London_NY",
+        "session": {"name": "London_NY", "quality": 8, "minutes_to_close": 999},
         "session_quality": 8,
         "session_fit": {"fit": "GOOD"},
+        "bank_holiday": {},
+        "high_impact_event": {},
     }
     regimen_info = {"regimen": regimen, "riesgo_pct": 1.0}
     mtf_info = {}
@@ -290,13 +324,31 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
     sr_info = {"sr_niveles": []}
 
     if not use_ia:
-        # Forzar solo estadistico
-        import config as cfg
-        old_modo = cfg.state.get("ia_modo", "autonomo")
-        cfg.state["ia_modo"] = "off"
-        result = analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
-        cfg.state["ia_modo"] = old_modo
-        return result
+        # Modo sin IA: usar directamente engines (TQS ya paso umbral)
+        direction = engines_result.get("direccion", "NEUTRAL")
+        if direction == "NEUTRAL":
+            return {"action": "WAIT", "confidence": 0}
+        precio = snapshot.get("precio", 0)
+        atr = snapshot.get("atr", precio * 0.005)
+        tqs = engines_result.get("trade_quality_score", 0)
+        sl_mult = 1.5
+        tp_mult = 3.0
+        if direction == "BUY":
+            sl = precio - atr * sl_mult
+            tp = precio + atr * tp_mult
+        else:
+            sl = precio + atr * sl_mult
+            tp = precio - atr * tp_mult
+        return {
+            "action": direction,
+            "confidence": int(tqs * 100),
+            "entry": precio,
+            "sl": sl, "tp": tp,
+            "risk_pct": 1.0,
+            "trailing_stop": "breakeven",
+            "consensus": f"engines/{tqs:.3f}",
+            "reason": "TQS pass (no-ia mode)",
+        }
 
     return analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
 
@@ -406,7 +458,10 @@ def run_backtest(symbol, tf, days, use_ia, capital):
 
         # Skip si hay trade activo
         if active_trade is not None:
-            continue
+            if idx >= active_trade:
+                active_trade = None
+            else:
+                continue
 
         snapshot, features = build_snapshot(df, idx, symbol, tf)
         if snapshot is None:
@@ -483,10 +538,8 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         trades.append(trade)
         capital += pnl_usd
 
-        # Marcar barras ocupadas
+        # Marcar barras ocupadas (no operar hasta que cierre este trade)
         active_trade = exit_idx
-        if idx >= active_trade:
-            active_trade = None
 
         # Print trade
         emoji = "+" if pnl_usd > 0 else "-"
