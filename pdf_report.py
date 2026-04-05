@@ -690,7 +690,7 @@ def generate_pdf():
     pdf.bullet("Status de cierre diferenciado: TP, SL, TRAILING, SWAP, TREND")
 
     pdf.subtitle("ACTUALIZACION: Pares Volatiles Recomendados")
-    pdf.body(
+    pdf.body_text(
         "Se han identificado los pares con mayor volatilidad media diaria para maximizar "
         "oportunidades de trading. La volatilidad se mide por el rango medio diario en pips/puntos."
     )
@@ -713,15 +713,15 @@ def generate_pdf():
     pdf.bullet("CRYPTO:")
     pdf.bullet("  BTCUSD ~$2000/dia - El mas liquido, 24/7")
     pdf.bullet("  ETHUSD ~$100/dia - Alta volatilidad, correlacion BTC")
-    pdf.body("")
-    pdf.body(
+    pdf.body_text("")
+    pdf.body_text(
         "NOTA: Los pares exoticos (USDTRY, USDMXN, USDZAR) tienen volatilidad extrema "
         "pero spreads muy altos que reducen la rentabilidad neta. Se recomienda priorizar "
         "los pares listados arriba que combinan volatilidad con liquidez y spreads ajustados."
     )
 
     pdf.subtitle("ACTUALIZACION: Script de Backtest TradingView")
-    pdf.body(
+    pdf.body_text(
         "Se ha creado un script Pine Script v6 (parracorp_backtest.pine) que replica la logica "
         "completa del sistema para backtesting en TradingView. Incluye:"
     )
@@ -735,15 +735,15 @@ def generate_pdf():
     pdf.bullet("Filtros: sesion London/NY, ADX minimo, concordancia EMA200")
     pdf.bullet("Panel visual con todos los scores de los motores en tiempo real")
     pdf.bullet("Alertas configurables para senales BUY/SELL y cruces EMA")
-    pdf.body("")
-    pdf.body(
+    pdf.body_text("")
+    pdf.body_text(
         "INSTRUCCIONES: Copiar el contenido de parracorp_backtest.pine en TradingView > "
         "Pine Script Editor > Add to Chart. Configurar el par y timeframe deseado. "
         "Ajustar parametros (TQS umbral, R:R, trailing) segun preferencia."
     )
 
     pdf.subtitle("ACTUALIZACION: Operacion Manual desde App")
-    pdf.body(
+    pdf.body_text(
         "Se ha anadido un panel en la pestana Config de la app Android que permite abrir "
         "posiciones manuales con los siguientes parametros:"
     )
