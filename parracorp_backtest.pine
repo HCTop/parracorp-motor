@@ -142,7 +142,11 @@ else if ema20_slope < 0 and price_mom < 0
 // =============================================================================
 // MOTOR 2: MEAN REVERSION (signal_engines.py motor_mean_reversion)
 // =============================================================================
-rsi_ext = rsi14 > 70 ? math.max(0, (rsi14 - 70) / 30) : rsi14 < 30 ? math.max(0, (30 - rsi14) / 30) : 0.0
+float rsi_ext = 0.0
+if rsi14 > 70
+    rsi_ext := math.max(0, (rsi14 - 70) / 30)
+else if rsi14 < 30
+    rsi_ext := math.max(0, (30 - rsi14) / 30)
 z_n = math.min(math.abs(zscore) / 3.0, 1.0)
 bb_n = math.min(math.abs(bb_distance), 1.0)
 
@@ -169,7 +173,10 @@ float s_score = 0.0
 string s_dir = "NEUTRAL"
 if is_forex
     s_score := math.min(math.abs(cs_proxy) * 100, 1.0)  // proxy
-    s_dir := cs_proxy > 0.001 ? "BUY" : cs_proxy < -0.001 ? "SELL" : "NEUTRAL"
+    if cs_proxy > 0.001
+        s_dir := "BUY"
+    else if cs_proxy < -0.001
+        s_dir := "SELL"
 
 // =============================================================================
 // MOTOR 4: VOLATILITY BREAKOUT (signal_engines.py motor_breakout)
@@ -442,10 +449,15 @@ plotshape(bearish_div and show_engines, "Bearish Div", shape.xcross, location.ab
 plotshape(bullish_div and show_engines, "Bullish Div", shape.xcross, location.belowbar, color.new(color.aqua, 20), size=size.tiny)
 
 // Background: regimen
-reg_color = regimen == "TRENDING_VOLATILE" ? color.new(color.green, 95) :
-            regimen == "TRENDING_CALM" ? color.new(color.teal, 95) :
-            regimen == "RANGING" ? color.new(color.yellow, 95) :
-            regimen == "CHOPPY" ? color.new(color.red, 95) : na
+color reg_color = na
+if regimen == "TRENDING_VOLATILE"
+    reg_color := color.new(color.green, 95)
+else if regimen == "TRENDING_CALM"
+    reg_color := color.new(color.teal, 95)
+else if regimen == "RANGING"
+    reg_color := color.new(color.yellow, 95)
+else if regimen == "CHOPPY"
+    reg_color := color.new(color.red, 95)
 bgcolor(reg_color, title="Regimen Background")
 
 // Squeeze indicator
@@ -476,7 +488,11 @@ if show_engines and barstate.islast
     table.cell(panel, 1, 5, regimen, text_color=color.yellow, text_size=size.tiny)
 
     table.cell(panel, 0, 6, "Direccion", text_color=color.gray, text_size=size.tiny)
-    dir_col = direccion == "BUY" ? color.green : direccion == "SELL" ? color.red : color.gray
+    color dir_col = color.gray
+    if direccion == "BUY"
+        dir_col := color.green
+    else if direccion == "SELL"
+        dir_col := color.red
     table.cell(panel, 1, 6, direccion, text_color=dir_col, text_size=size.tiny)
 
     table.cell(panel, 0, 7, "RSI", text_color=color.gray, text_size=size.tiny)
