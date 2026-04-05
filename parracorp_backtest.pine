@@ -19,21 +19,25 @@ strategy("ParraCorp v3.1 Backtest", overlay=true, default_qty_type=strategy.perc
 // INPUTS
 // =============================================================================
 grp_tqs = "Trade Quality Score"
-umbral_tqs      = input.float(0.65, "Umbral TQS (forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
-umbral_tqs_nofx = input.float(0.50, "Umbral TQS (no-forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
+umbral_tqs      = input.float(0.75, "Umbral TQS (forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs, tooltip="Mas alto = menos trades pero mas calidad")
+umbral_tqs_nofx = input.float(0.60, "Umbral TQS (no-forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
 is_forex        = input.bool(true, "Es par Forex?", group=grp_tqs)
 
 grp_risk = "Risk Management"
 riesgo_pct  = input.float(1.0, "Riesgo % por trade", minval=0.1, maxval=5.0, step=0.1, group=grp_risk)
-rr_minimo   = input.float(1.5, "R:R minimo", minval=1.0, maxval=5.0, step=0.1, group=grp_risk)
-max_ops     = input.int(3, "Max operaciones simultaneas", minval=1, maxval=10, group=grp_risk)
-trailing_type = input.string("breakeven", "Trailing Stop", options=["none", "breakeven", "atr1", "atr2"], group=grp_risk)
+rr_minimo   = input.float(2.0, "R:R minimo", minval=1.0, maxval=5.0, step=0.1, group=grp_risk)
+max_ops     = input.int(1, "Max operaciones simultaneas", minval=1, maxval=10, group=grp_risk)
+trailing_type = input.string("atr1", "Trailing Stop", options=["none", "breakeven", "atr1", "atr2"], group=grp_risk)
 
 grp_filter = "Filtros"
 use_session    = input.bool(true, "Filtrar por sesion (solo London+NY)", group=grp_filter)
-use_adx_filter = input.bool(true, "Filtro ADX > 15", group=grp_filter)
+use_adx_filter = input.bool(true, "Filtro ADX > 20", group=grp_filter)
 use_ema200     = input.bool(true, "Filtro EMA200 (tendencia mayor)", group=grp_filter)
 use_divergence = input.bool(true, "Penalizar divergencias", group=grp_filter)
+use_trend_align = input.bool(true, "Exigir EMA9>20>50 alineadas", group=grp_filter, tooltip="Solo operar cuando las EMAs confirman la tendencia")
+use_supertrend = input.bool(true, "Exigir Supertrend concordante", group=grp_filter)
+min_motors     = input.int(2, "Min motores coincidentes", minval=1, maxval=3, group=grp_filter, tooltip="Cuantos motores deben coincidir en direccion")
+use_no_squeeze = input.bool(true, "No entrar en Squeeze (esperar breakout)", group=grp_filter)
 
 grp_visual = "Visual"
 show_engines = input.bool(true, "Mostrar panel engines", group=grp_visual)
@@ -269,10 +273,14 @@ if use_divergence
 float buy_score_total  = (m_dir == "BUY" ? m_score : 0) + (r_dir == "BUY" ? r_score : 0) + (s_dir == "BUY" ? s_score : 0)
 float sell_score_total = (m_dir == "SELL" ? m_score : 0) + (r_dir == "SELL" ? r_score : 0) + (s_dir == "SELL" ? s_score : 0)
 
+// Contar motores coincidentes
+int buy_motors = (m_dir == "BUY" ? 1 : 0) + (r_dir == "BUY" ? 1 : 0) + (s_dir == "BUY" ? 1 : 0) + (b_dir == "BREAKOUT" and m_dir == "BUY" ? 1 : 0)
+int sell_motors = (m_dir == "SELL" ? 1 : 0) + (r_dir == "SELL" ? 1 : 0) + (s_dir == "SELL" ? 1 : 0) + (b_dir == "BREAKOUT" and m_dir == "SELL" ? 1 : 0)
+
 string direccion = "NEUTRAL"
-if buy_score_total > sell_score_total and buy_score_total > 0.3
+if buy_score_total > sell_score_total and buy_score_total > 0.3 and buy_motors >= min_motors
     direccion := "BUY"
-else if sell_score_total > buy_score_total and sell_score_total > 0.3
+else if sell_score_total > buy_score_total and sell_score_total > 0.3 and sell_motors >= min_motors
     direccion := "SELL"
 
 // =============================================================================
@@ -300,11 +308,30 @@ if not na(fractal_lo)
 hour_utc = hour(time, "UTC")
 in_session = not use_session or (hour_utc >= 7 and hour_utc <= 21)
 
-// ADX minimo
-adx_ok = not use_adx_filter or adx_val > 15
+// ADX minimo (subido a 20 para exigir tendencia clara)
+adx_ok = not use_adx_filter or adx_val > 20
 
 // EMA200 concordancia
 ema200_ok = not use_ema200 or (direccion == "BUY" and close > ema200) or (direccion == "SELL" and close < ema200) or na(ema200)
+
+// Alineacion EMAs: solo operar a favor de la tendencia
+bool trend_aligned = not use_trend_align
+if use_trend_align
+    if direccion == "BUY"
+        trend_aligned := ema9 > ema20 and ema20 > ema50
+    else if direccion == "SELL"
+        trend_aligned := ema9 < ema20 and ema20 < ema50
+
+// Supertrend concordante
+bool st_ok = not use_supertrend
+if use_supertrend
+    if direccion == "BUY"
+        st_ok := st_dir == "UP"
+    else if direccion == "SELL"
+        st_ok := st_dir == "DOWN"
+
+// No entrar durante squeeze (volatilidad comprimida, direccion incierta)
+bool squeeze_ok = not use_no_squeeze or not squeeze
 
 // Umbral TQS
 float umbral = is_forex ? umbral_tqs : umbral_tqs_nofx
@@ -352,8 +379,8 @@ bool rr_ok = rr_final >= rr_minimo
 // =============================================================================
 // SEÑALES DE ENTRADA
 // =============================================================================
-bool signal_buy  = pasa_tqs and direccion == "BUY" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
-bool signal_sell = pasa_tqs and direccion == "SELL" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
+bool signal_buy  = pasa_tqs and direccion == "BUY" and in_session and adx_ok and ema200_ok and trend_aligned and st_ok and squeeze_ok and rr_ok and strategy.opentrades < max_ops
+bool signal_sell = pasa_tqs and direccion == "SELL" and in_session and adx_ok and ema200_ok and trend_aligned and st_ok and squeeze_ok and rr_ok and strategy.opentrades < max_ops
 
 // =============================================================================
 // TRAILING STOP LOGIC
