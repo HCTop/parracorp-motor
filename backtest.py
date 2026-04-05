@@ -307,44 +307,13 @@ def detect_regimen(adx, vol_ratio):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
-    """Llama al pipeline de IA para backtest."""
+    """Llama al pipeline REAL de brain.py (mismo que produccion)."""
+    from brain import analyze
+    import brain
 
     direction = engines_result.get("direccion", "NEUTRAL")
     if direction == "NEUTRAL":
         return {"action": "WAIT", "confidence": 0}
-
-    precio = snapshot.get("precio", 0)
-    atr = snapshot.get("atr", precio * 0.005)
-    tqs = engines_result.get("trade_quality_score", 0)
-
-    if not use_ia:
-        # Modo sin IA: usar directamente engines (TQS ya paso umbral)
-        sl_mult = 1.5
-        tp_mult = 3.0
-        if direction == "BUY":
-            sl = precio - atr * sl_mult
-            tp = precio + atr * tp_mult
-        else:
-            sl = precio + atr * sl_mult
-            tp = precio - atr * tp_mult
-        return {
-            "action": direction,
-            "confidence": int(tqs * 100),
-            "entry": precio,
-            "sl": sl, "tp": tp,
-            "risk_pct": 1.0,
-            "trailing_stop": "breakeven",
-            "consensus": f"engines/{tqs:.3f}",
-            "reason": "TQS pass (no-ia mode)",
-        }
-
-    # Modo CON IA: llamar Groq + Gemini directamente (sin Stats que siempre da WAIT)
-    from brain import modelo_groq, modelo_gemini
-    from concurrent.futures import ThreadPoolExecutor
-    import brain
-
-    # Desactivar rate limit para backtest
-    brain._last_call_ts = 0
 
     context = {
         "signals_active": [],
@@ -354,86 +323,25 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
         "bank_holiday": {},
         "high_impact_event": {},
     }
+    regimen_info = {"regimen": regimen, "riesgo_pct": 1.0}
+    mtf_info = {}
+    of_info = {"delta": 0, "imbalance": 0}
     sr_info = {"sr_niveles": []}
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_groq = executor.submit(
-            modelo_groq, symbol, snapshot, engines_result, context, "N/A", sr_info
-        )
-        future_gemini = executor.submit(
-            modelo_gemini, symbol, snapshot, engines_result, context, None, "N/A", sr_info
-        )
-        groq_result = future_groq.result()
-        gemini_result = future_gemini.result()
+    # Desactivar rate limit para backtest
+    brain._last_call_ts = 0
 
-    # Consensus Groq + Gemini
-    g_action = groq_result.get("action", "WAIT") if groq_result else "WAIT"
-    g_conf = groq_result.get("confidence", 0) if groq_result else 0
-    m_action = gemini_result.get("action", "WAIT") if gemini_result else "WAIT"
-    m_conf = gemini_result.get("confidence", 0) if gemini_result else 0
-
-    # Determinar accion: priorizar la IA que opera si alguna coincide con engines
-    ia_actions = []
-    if g_action in ("BUY", "SELL"):
-        ia_actions.append(("Groq", g_action, g_conf, groq_result))
-    if m_action in ("BUY", "SELL"):
-        ia_actions.append(("Gemini", m_action, m_conf, gemini_result))
-
-    final_action = "WAIT"
-    final_conf = 0
-    best_params = gemini_result or groq_result or {}
-
-    if len(ia_actions) == 2 and ia_actions[0][1] == ia_actions[1][1]:
-        # Ambas coinciden en la misma direccion
-        final_action = ia_actions[0][1]
-        final_conf = int((ia_actions[0][2] + ia_actions[1][2]) / 2)
-        best_params = ia_actions[1][3]  # Gemini tiene mejores params
-    elif len(ia_actions) >= 1:
-        # Al menos 1 IA dice operar - usar la de mayor confianza si coincide con engines
-        best = max(ia_actions, key=lambda x: x[2])
-        if best[1] == direction and best[2] >= 70:
-            final_action = best[1]
-            final_conf = best[2]
-            best_params = best[3]
-        elif best[2] >= 85:
-            # Confianza muy alta, confiar en la IA
-            final_action = best[1]
-            final_conf = best[2]
-            best_params = best[3]
-
-    # Si ambas IA dicen WAIT pero engines tiene direccion clara, usar engines
-    if final_action == "WAIT" and direction in ("BUY", "SELL") and tqs >= 0.70:
-        final_action = direction
-        final_conf = int(tqs * 100)
-
-    # Parametros SL/TP de la IA o defaults
-    sl_mult = best_params.get("sl_atr", 1.5)
-    tp_mult = best_params.get("tp_atr", 3.0)
-    risk_pct = min(max(best_params.get("risk_pct", 1.0), 0.5), 2.0)
-    trailing = best_params.get("trailing_stop", "breakeven")
-
-    if final_action == "BUY":
-        sl = precio - atr * sl_mult
-        tp = precio + atr * tp_mult
-    elif final_action == "SELL":
-        sl = precio + atr * sl_mult
-        tp = precio - atr * tp_mult
+    if not use_ia:
+        # Forzar solo estadistico (sin gastar tokens)
+        import config as cfg
+        old_modo = cfg.state.get("ia_modo", "autonomo")
+        cfg.state["ia_modo"] = "off"
+        result = analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
+        cfg.state["ia_modo"] = old_modo
     else:
-        sl = 0
-        tp = 0
+        result = analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
 
-    consensus_str = f"Groq={g_action}({g_conf}%) Gemini={m_action}({m_conf}%)"
-
-    return {
-        "action": final_action,
-        "confidence": final_conf,
-        "entry": precio,
-        "sl": sl, "tp": tp,
-        "risk_pct": risk_pct,
-        "trailing_stop": trailing,
-        "consensus": consensus_str,
-        "reason": f"[IA] {consensus_str}",
-    }
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -139,22 +139,54 @@ def modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info
     if mtf_info.get("mtf_dir") == "BLOCK":
         return {"action": "WAIT", "confidence": 80, "reason": mtf_info.get("mtf_reason", "Conflicto MTF")}
 
-    # Sistema de votos por features (PDF spec)
+    # Sistema de votos por features
     votes_buy = 0
     votes_sell = 0
     reasons = []
 
-    # Currency spread
-    cs_spread = snapshot.get("currency_spread", 0)
-    if abs(cs_spread) > 0.0008:
-        if cs_spread > 0:
+    # 1. TQS alto (los 4 motores ya evaluaron el mercado)
+    tqs = engines_result.get("trade_quality_score", 0)
+    if tqs >= 0.70:
+        if direction == "BUY":
             votes_buy += 1
-            reasons.append("CS+")
-        else:
+        elif direction == "SELL":
             votes_sell += 1
-            reasons.append("CS-")
+        reasons.append(f"TQS={tqs:.2f}")
 
-    # Z-score
+    # 2. Momentum + ADX
+    mom_score = engines_result.get("momentum_score", 0)
+    adx = snapshot.get("adx", 0)
+    if mom_score > 0.7 and adx > 25:
+        mom_dir = engines_result.get("momentum_dir", "NEUTRAL")
+        if mom_dir == "BUY":
+            votes_buy += 1
+        elif mom_dir == "SELL":
+            votes_sell += 1
+        reasons.append(f"MOM={mom_score:.2f}")
+
+    # 3. EMA alignment (precio vs EMAs)
+    precio = snapshot.get("precio", 0)
+    ema9 = snapshot.get("ema9", 0)
+    ema20 = snapshot.get("ema20", 0)
+    ema50 = snapshot.get("ema50", 0)
+    if precio > 0 and ema9 > 0 and ema20 > 0 and ema50 > 0:
+        if precio > ema9 > ema20 > ema50:
+            votes_buy += 1
+            reasons.append("EMA_ALIGN_UP")
+        elif precio < ema9 < ema20 < ema50:
+            votes_sell += 1
+            reasons.append("EMA_ALIGN_DN")
+
+    # 4. RSI confirmacion (no en extremos contradictorios)
+    rsi = snapshot.get("rsi", 50)
+    if rsi > 55 and direction == "BUY":
+        votes_buy += 1
+        reasons.append(f"RSI={rsi:.0f}")
+    elif rsi < 45 and direction == "SELL":
+        votes_sell += 1
+        reasons.append(f"RSI={rsi:.0f}")
+
+    # 5. Z-score
     zscore = snapshot.get("zscore_h1", 0)
     if abs(zscore) > 2.0:
         if zscore < 0:
@@ -164,24 +196,32 @@ def modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info
             votes_sell += 1
             reasons.append(f"Z={zscore:.1f}")
 
-    # Momentum + ADX
-    mom_score = engines_result.get("momentum_score", 0)
-    adx = snapshot.get("adx", 0)
-    if mom_score > 0.7 and adx > 28:
-        mom_dir = engines_result.get("momentum_dir", "NEUTRAL")
-        if mom_dir == "BUY":
-            votes_buy += 1
-        elif mom_dir == "SELL":
-            votes_sell += 1
-        reasons.append(f"MOM={mom_score:.2f}")
-
-    # Squeeze + vol_ratio
+    # 6. Squeeze + vol_ratio
     if snapshot.get("squeeze", False) and snapshot.get("vol_ratio", 1.0) > 1.4:
         votes_buy += 1 if direction == "BUY" else 0
         votes_sell += 1 if direction == "SELL" else 0
         reasons.append("SQZ!")
 
-    # Divergencia
+    # 7. Breakout score alto
+    brk_score = engines_result.get("breakout_score", 0)
+    if brk_score > 0.7:
+        if direction == "BUY":
+            votes_buy += 1
+        elif direction == "SELL":
+            votes_sell += 1
+        reasons.append(f"BRK={brk_score:.2f}")
+
+    # 8. Currency spread (si disponible)
+    cs_spread = snapshot.get("currency_spread", 0)
+    if abs(cs_spread) > 0.0008:
+        if cs_spread > 0:
+            votes_buy += 1
+            reasons.append("CS+")
+        else:
+            votes_sell += 1
+            reasons.append("CS-")
+
+    # 9. Divergencia
     div_sig = engines_result.get("divergence_signal", "NONE")
     if div_sig == "BULLISH_DIV":
         votes_buy += 1
@@ -190,7 +230,7 @@ def modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info
         votes_sell += 1
         reasons.append("DIV_BEAR")
 
-    # MTF alignment
+    # 10. MTF alignment (si disponible)
     mtf_align = mtf_info.get("mtf_alignment", 0.5)
     if mtf_align >= 1.0:
         if direction == "BUY":
@@ -199,7 +239,7 @@ def modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info
             votes_sell += 1
         reasons.append("MTF=1.0")
 
-    # Order flow
+    # 11. Order flow (si disponible)
     of_delta = of_info.get("order_flow_delta", 0)
     if abs(of_delta) > 0.3:
         if of_delta > 0:
@@ -221,13 +261,13 @@ def modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info
 
     if votes_buy >= 3 and votes_buy > votes_sell:
         action = "BUY"
-        conf = min(55 + votes_buy * 10, 95)
+        conf = min(55 + votes_buy * 8, 95)
     elif votes_sell >= 3 and votes_sell > votes_buy:
         action = "SELL"
-        conf = min(55 + votes_sell * 10, 95)
+        conf = min(55 + votes_sell * 8, 95)
     elif votes_buy > votes_sell and votes_buy >= 2:
         action = "BUY"
-        conf = min(45 + votes_buy * 8, 70)  # Baja confianza, no pasara gate 80%
+        conf = min(45 + votes_buy * 8, 70)
         reasons.append("(pocos votos)")
     elif votes_sell > votes_buy and votes_sell >= 2:
         action = "SELL"
