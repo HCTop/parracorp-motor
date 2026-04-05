@@ -500,10 +500,11 @@ def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_backtest(symbol, tf, days, use_ia, capital):
+    capital_inicial = capital
     print(f"\n{'='*60}")
     print(f"  PARRACORP BACKTEST")
     print(f"  {symbol} | {tf}m | {days} dias | IA: {'SI' if use_ia else 'NO'}")
-    print(f"  Capital: ${capital:,.0f}")
+    print(f"  Capital: ${capital:,.0f} (compounding activo)")
     print(f"{'='*60}\n")
 
     # 1. Descargar datos
@@ -586,6 +587,9 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         sl_dist = abs(entry - sl)
         pnl_usd = (pnl / sl_dist * risk_usd) if sl_dist > 0 else 0
 
+        capital_before = capital
+        capital += pnl_usd
+
         trade = {
             "n": len(trades) + 1,
             "entry_time": str(df.index[idx]),
@@ -604,19 +608,21 @@ def run_backtest(symbol, tf, days, use_ia, capital):
             "consensus": result.get("consensus", "?"),
             "confidence": result.get("confidence", 0),
             "bars": exit_idx - idx,
+            "capital_before": round(capital_before, 2),
+            "capital_after": round(capital, 2),
+            "risk_usd": round(risk_usd, 2),
         }
         trades.append(trade)
-        capital += pnl_usd
 
         # Marcar barras ocupadas (no operar hasta que cierre este trade)
         active_trade = exit_idx
 
-        # Print trade
-        emoji = "+" if pnl_usd > 0 else "-"
+        # Print trade con capital
         color = "\033[92m" if pnl_usd > 0 else "\033[91m"
         reset = "\033[0m"
         print(f"  {color}#{trade['n']:3d} {action:4s} {trade['entry_time'][:16]} -> {trade['exit_time'][:16]} "
-              f"| {status:14s} | {pnl_pips:+7.1f} pips | {pnl_usd:+8.2f} USD | TQS:{tqs:.2f} {regimen}{reset}")
+              f"| {status:14s} | {pnl_pips:+7.1f} pips | {pnl_usd:+8.2f} USD "
+              f"| Capital: ${capital:,.2f} | Riesgo: ${risk_usd:.2f}{reset}")
 
     # Reset active_trade for proper counting
     # Recalculate skipped bars
@@ -674,21 +680,23 @@ def run_backtest(symbol, tf, days, use_ia, capital):
     print(f"    SL:                {sl_count}")
     print(f"    Trailing:          {trail_count}")
     print(f"")
+    print(f"  Capital inicial:     ${capital_inicial:,.2f}")
     print(f"  Capital final:       ${capital:,.2f}")
-    print(f"  Rentabilidad:        {(capital - 10000) / 100:.2f}%")
+    print(f"  Rentabilidad:        {((capital - capital_inicial) / capital_inicial) * 100:+.2f}%")
     print(f"")
 
     # Trades detallados
     print(f"  {'='*60}")
     print(f"  DETALLE DE TRADES")
     print(f"  {'='*60}")
-    print(f"  {'#':>3} {'Dir':4} {'Entrada':>10} {'Salida':>10} {'Pips':>8} {'USD':>9} {'Status':14} {'TQS':>5} {'Regimen'}")
-    print(f"  {'-'*80}")
+    print(f"  {'#':>3} {'Dir':4} {'Entrada':>10} {'Salida':>10} {'Pips':>8} {'USD':>9} {'Status':14} {'Capital':>10} {'Riesgo':>8}")
+    print(f"  {'-'*90}")
     for t in trades:
         color = "\033[92m" if t["pnl_usd"] > 0 else "\033[91m"
         reset = "\033[0m"
         print(f"  {color}{t['n']:3d} {t['action']:4s} {t['entry']:10.5f} {t['exit']:10.5f} "
-              f"{t['pnl_pips']:+8.1f} {t['pnl_usd']:+9.2f} {t['status']:14s} {t['tqs']:5.3f} {t['regimen']}{reset}")
+              f"{t['pnl_pips']:+8.1f} {t['pnl_usd']:+9.2f} {t['status']:14s} "
+              f"${t['capital_after']:>8,.2f} ${t['risk_usd']:>7.2f}{reset}")
 
     print(f"\n  Backtest completado.")
 
