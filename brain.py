@@ -528,8 +528,9 @@ def modelo_groq(symbol, snapshot, engines_result, context, htf_trend="N/A", sr_i
 
     interpretation = _interpret_context(symbol, snapshot, engines_result, context, htf_trend, sr_info)
 
-    prompt = f"""Eres un trader profesional de forex/CFDs. Analiza la situacion y decide BUY, SELL o WAIT.
-Solo opera cuando hay CONFLUENCIA CLARA de al menos 3 indicadores alineados. WAIT si hay duda.
+    prompt = f"""Eres un trader profesional. Los motores cuantitativos ya aprobaron esta señal (TQS={tqs:.0%}).
+Tu rol es CONFIRMAR o RECHAZAR la operacion basandote en el contexto del mercado.
+IMPORTANTE: Si la tendencia es clara y los motores la confirman, OPERA. No rechaces por RSI extremo en tendencia.
 
 {symbol} | TF={tf}min | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {session.get('quality',0)}/5)
@@ -540,14 +541,13 @@ Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {se
 === HISTORIAL RECIENTE (ultimas 8 velas) ===
 {snapshot.get('hist_chart', 'No disponible')}
 
-=== REGLAS ESTRICTAS ===
-- RSI>70: PROHIBIDO comprar | RSI<30: PROHIBIDO vender
-- ADX<18: WAIT obligatorio (sin fuerza)
-- Necesitas minimo 3 señales alineadas para operar
-- Confidence<75: WAIT (se conservador)
-- SL: 1.0-2.5 ATR, colocar DETRAS del S/R mas cercano si es posible
-- TP: minimo 2x el SL, apuntar al S/R opuesto si existe (R:R 2:1 minimo)
+=== REGLAS ===
+- RSI extremo (>80 o <20) en RANGO: precaucion. En TENDENCIA: operar a favor
+- ADX>25: tendencia fuerte, operar a favor. ADX<15: evitar
+- Si los motores y el precio confirman la direccion: operar con confianza alta
+- SL: 1.0-2.0 ATR | TP: 2.0-4.0 ATR (R:R minimo 2:1)
 - Trailing: "none" normal, "breakeven" si momentum medio, "atr1" si ADX>30
+- WAIT solo si hay contradiccion CLARA entre indicadores o riesgo evidente
 
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","analysis":"1 frase con la razon"}}
 """
@@ -688,7 +688,8 @@ def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, h
 
     prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
 
-Eres un trader profesional. Analiza de forma INDEPENDIENTE. BUY/SELL solo con confluencia clara. WAIT si hay duda.
+Los motores cuantitativos ya aprobaron esta señal (TQS={tqs:.0%}). Tu rol es CONFIRMAR o RECHAZAR.
+IMPORTANTE: Si la tendencia es clara y el momentum lo confirma, OPERA. RSI extremo en tendencia NO es razon para rechazar.
 
 {symbol} | TF={tf}min | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {session.get('quality',0)}/5)
@@ -703,15 +704,13 @@ Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {se
 {news_text}
 Sentimiento: {news.get('sentiment','neutral')}
 
-=== REGLAS ESTRICTAS ===
-- RSI>70: PROHIBIDO comprar | RSI<30: PROHIBIDO vender
-- ADX<18: WAIT obligatorio
-- Noticias que contradicen la direccion: WAIT
-- Necesitas minimo 3 señales alineadas
-- Confidence<75: WAIT
-- SL: 1.0-2.5 ATR, colocar DETRAS del S/R mas cercano si es posible
-- TP: 2.0-5.0 ATR, apuntar al S/R opuesto si existe, R:R minimo 2:1
-- Trailing: "none", "breakeven" si momentum medio, "atr1" si ADX>30
+=== REGLAS ===
+- RSI extremo en RANGO: precaucion. En TENDENCIA: operar a favor de la tendencia
+- ADX>25: tendencia fuerte, confirma la operacion. ADX<15: evitar
+- Noticias fuertes contra la direccion: WAIT
+- SL: 1.0-2.0 ATR | TP: 2.0-4.0 ATR (R:R minimo 2:1)
+- Trailing: "none" normal, "breakeven" si momentum medio, "atr1" si ADX>30
+- WAIT solo si hay contradiccion CLARA o riesgo alto evidente
 
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","reason":"1 frase"}}"""
 
@@ -787,9 +786,9 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
     else:
         final_confidence = 0
 
-    # Gate: confianza minima 80%
-    if final_action in ("BUY", "SELL") and final_confidence < 80:
-        mlog("BRAIN", f"Confianza {final_confidence}% < 80% minimo -> WAIT")
+    # Gate: confianza minima 65%
+    if final_action in ("BUY", "SELL") and final_confidence < 65:
+        mlog("BRAIN", f"Confianza {final_confidence}% < 65% minimo -> WAIT")
         final_action = "WAIT"
 
     # Parametros: prioridad Gemini > Groq > Stats
