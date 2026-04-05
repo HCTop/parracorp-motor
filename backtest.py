@@ -307,30 +307,18 @@ def detect_regimen(adx, vol_ratio):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
-    """Llama al pipeline completo de brain.py."""
-    from brain import analyze
+    """Llama al pipeline de IA para backtest."""
 
-    context = {
-        "signals_active": [],
-        "session": {"name": "London_NY", "quality": 8, "minutes_to_close": 999},
-        "session_quality": 8,
-        "session_fit": {"fit": "GOOD"},
-        "bank_holiday": {},
-        "high_impact_event": {},
-    }
-    regimen_info = {"regimen": regimen, "riesgo_pct": 1.0}
-    mtf_info = {}
-    of_info = {"delta": 0, "imbalance": 0}
-    sr_info = {"sr_niveles": []}
+    direction = engines_result.get("direccion", "NEUTRAL")
+    if direction == "NEUTRAL":
+        return {"action": "WAIT", "confidence": 0}
+
+    precio = snapshot.get("precio", 0)
+    atr = snapshot.get("atr", precio * 0.005)
+    tqs = engines_result.get("trade_quality_score", 0)
 
     if not use_ia:
         # Modo sin IA: usar directamente engines (TQS ya paso umbral)
-        direction = engines_result.get("direccion", "NEUTRAL")
-        if direction == "NEUTRAL":
-            return {"action": "WAIT", "confidence": 0}
-        precio = snapshot.get("precio", 0)
-        atr = snapshot.get("atr", precio * 0.005)
-        tqs = engines_result.get("trade_quality_score", 0)
         sl_mult = 1.5
         tp_mult = 3.0
         if direction == "BUY":
@@ -350,7 +338,88 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
             "reason": "TQS pass (no-ia mode)",
         }
 
-    return analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
+    # Modo CON IA: llamar Groq + Gemini directamente (sin Stats que siempre da WAIT)
+    from brain import modelo_groq, modelo_gemini
+    from concurrent.futures import ThreadPoolExecutor
+    import brain
+
+    # Desactivar rate limit para backtest
+    brain._last_call_ts = 0
+
+    context = {
+        "signals_active": [],
+        "session": {"name": "London_NY", "quality": 8, "minutes_to_close": 999},
+        "session_quality": 8,
+        "session_fit": {"fit": "GOOD"},
+        "bank_holiday": {},
+        "high_impact_event": {},
+    }
+    sr_info = {"sr_niveles": []}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_groq = executor.submit(
+            modelo_groq, symbol, snapshot, engines_result, context, "N/A", sr_info
+        )
+        future_gemini = executor.submit(
+            modelo_gemini, symbol, snapshot, engines_result, context, None, "N/A", sr_info
+        )
+        groq_result = future_groq.result()
+        gemini_result = future_gemini.result()
+
+    # Consensus solo Groq + Gemini (2 votos, sin Stats)
+    g_action = groq_result.get("action", "WAIT") if groq_result else "WAIT"
+    g_conf = groq_result.get("confidence", 0) if groq_result else 0
+    m_action = gemini_result.get("action", "WAIT") if gemini_result else "WAIT"
+    m_conf = gemini_result.get("confidence", 0) if gemini_result else 0
+
+    # Si ambos coinciden en BUY o SELL → ejecutar
+    if g_action == m_action and g_action in ("BUY", "SELL"):
+        final_action = g_action
+        final_conf = int((g_conf + m_conf) / 2)
+    # Si uno dice BUY/SELL con alta confianza y el otro WAIT → ejecutar si conf >= 80
+    elif g_action in ("BUY", "SELL") and g_conf >= 80 and m_action == "WAIT":
+        final_action = g_action
+        final_conf = g_conf
+    elif m_action in ("BUY", "SELL") and m_conf >= 80 and g_action == "WAIT":
+        final_action = m_action
+        final_conf = m_conf
+    else:
+        final_action = "WAIT"
+        final_conf = max(g_conf, m_conf)
+
+    # Gate minimo de confianza
+    if final_action in ("BUY", "SELL") and final_conf < 70:
+        final_action = "WAIT"
+
+    # Parametros SL/TP
+    params = gemini_result or groq_result or {}
+    sl_mult = params.get("sl_atr", 1.5)
+    tp_mult = params.get("tp_atr", 3.0)
+    risk_pct = min(max(params.get("risk_pct", 1.0), 0.5), 2.0)
+    trailing = params.get("trailing_stop", "breakeven")
+
+    if final_action == "BUY":
+        sl = precio - atr * sl_mult
+        tp = precio + atr * tp_mult
+    elif final_action == "SELL":
+        sl = precio + atr * sl_mult
+        tp = precio - atr * tp_mult
+    else:
+        sl = 0
+        tp = 0
+
+    consensus_str = f"Groq={g_action}({g_conf}%) Gemini={m_action}({m_conf}%)"
+
+    return {
+        "action": final_action,
+        "confidence": final_conf,
+        "entry": precio,
+        "sl": sl, "tp": tp,
+        "risk_pct": risk_pct,
+        "trailing_stop": trailing,
+        "consensus": consensus_str,
+        "reason": f"[IA] {consensus_str}",
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -482,8 +551,9 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         # Brain (con o sin IA)
         try:
             result = call_brain_ia(symbol, snapshot, engines, regimen, use_ia)
-            if use_ia and result.get("consensus", "").startswith(("2/", "3/")):
+            if use_ia:
                 total_ia_calls += 1
+                time.sleep(1.5)  # Rate limit APIs
         except Exception as e:
             print(f"  [!] Error brain en vela {idx}: {e}")
             continue
