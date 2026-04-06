@@ -213,7 +213,14 @@ PESOS_REGIMEN_NO_FX = {
 }
 
 UMBRAL_TQS = 0.65
-UMBRAL_TQS_NO_FX = 0.50  # Umbral mas bajo para activos sin currency strength (3 motores)
+UMBRAL_TQS_METAL = 0.52   # Metales: trend mas lento, umbral intermedio
+UMBRAL_TQS_NO_FX = 0.55   # Otros sin currency strength (indices, commodities)
+UMBRAL_TQS_CRYPTO = 0.62  # Crypto: muy choppy, mas exigente
+ADX_MIN_METAL = 18         # Metales trendan con ADX mas bajo
+ADX_MIN_NO_FX = 22         # Indices/commodities
+ADX_MIN_CRYPTO = 25        # Crypto mas exigente
+SLOPE_MIN_METAL = 0.002    # Oro tiende lento: 0.2% en 10 velas = suficiente
+SLOPE_MIN_DEFAULT = 0.005  # Crypto/otros: 0.5% en 10 velas
 
 
 def trade_quality_score(m_score, r_score, s_score, b_score, regimen, pesos_override=None):
@@ -276,6 +283,29 @@ def determinar_direccion_consensus(m_dir, r_dir, s_dir, m_score, r_score, s_scor
     return "NEUTRAL"
 
 
+def _is_metal(symbol):
+    """Detecta si un simbolo es metal (XAU, XAG, XPT, XPD)."""
+    sym = (symbol or "").upper().replace("/", "")
+    return sym.startswith(("XAU", "XAG", "XPT", "XPD"))
+
+
+def _is_crypto(symbol):
+    """Detecta si un simbolo es crypto."""
+    sym = (symbol or "").upper().replace("/", "")
+    crypto_bases = {"BTC","ETH","SOL","XRP","BNB","DOGE","ADA","AVAX",
+                    "LINK","DOT","MATIC","LTC","UNI","XLM","ATOM",
+                    "NEAR","FIL","APT","ARB","OP"}
+    if len(sym) >= 6:
+        base = sym[:3]
+        if base in crypto_bases:
+            return True
+        # 4-letter bases like DOGE, LINK, AVAX, MATIC
+        base4 = sym[:4]
+        if base4 in crypto_bases:
+            return True
+    return False
+
+
 def _is_forex(symbol):
     """Detecta si un simbolo es forex (tiene currency strength util)."""
     sym = (symbol or "").upper().replace("/", "")
@@ -327,6 +357,9 @@ def evaluar_senales(features, regimen, pesos_override=None):
 
     # Seleccionar pesos segun tipo de activo
     is_fx = _is_forex(symbol)
+    is_crypto = _is_crypto(symbol)
+    is_metal = _is_metal(symbol)
+
     if pesos_override:
         pesos_tabla = None  # se usa pesos_override directamente
     elif is_fx:
@@ -334,8 +367,21 @@ def evaluar_senales(features, regimen, pesos_override=None):
     else:
         pesos_tabla = PESOS_REGIMEN_NO_FX
 
-    # TQS
-    if pesos_override:
+    # Bloquear regimenes malos para activos sin currency strength
+    # Crypto: RANGING y CHOPPY bloqueados
+    # Metales: solo CHOPPY bloqueado
+    # Otros NO-FX: RANGING y CHOPPY bloqueados
+    if not is_fx and not pesos_override:
+        if is_metal and regimen == "CHOPPY":
+            pesos_cfg = {"bloquear": True}
+            tqs = 0.0
+        elif not is_metal and regimen in ("RANGING", "CHOPPY"):
+            pesos_cfg = {"bloquear": True}
+            tqs = 0.0
+        else:
+            pesos_cfg = pesos_tabla.get(regimen, pesos_tabla.get("NORMAL", {}))
+            tqs = trade_quality_score(m_score, r_score, s_score, b_score, regimen, pesos_cfg)
+    elif pesos_override:
         tqs = trade_quality_score(m_score, r_score, s_score, b_score, regimen, pesos_override)
     else:
         pesos_cfg = pesos_tabla.get(regimen, pesos_tabla.get("NORMAL", {}))
@@ -350,9 +396,48 @@ def evaluar_senales(features, regimen, pesos_override=None):
     elif div_signal == "BULLISH_DIV" and direccion == "SELL":
         tqs *= 0.7
 
-    umbral = UMBRAL_TQS if is_fx else UMBRAL_TQS_NO_FX
-    pasa = tqs >= umbral and direccion != "NEUTRAL"
+    # Umbral segun tipo de activo
+    if is_fx:
+        umbral = UMBRAL_TQS          # 0.65
+    elif is_metal:
+        umbral = UMBRAL_TQS_METAL    # 0.52
+    elif is_crypto:
+        umbral = UMBRAL_TQS_CRYPTO   # 0.62
+    else:
+        umbral = UMBRAL_TQS_NO_FX    # 0.55
 
+    # Filtros de tendencia para activos sin currency strength
+    nofx_ok = True
+    if not is_fx:
+        # ADX minimo por tipo
+        if is_crypto:
+            adx_min = ADX_MIN_CRYPTO     # 25
+        elif is_metal:
+            adx_min = ADX_MIN_METAL      # 18
+        else:
+            adx_min = ADX_MIN_NO_FX      # 22
+        if adx < adx_min:
+            nofx_ok = False
+        # Solo operar en direccion de la tendencia principal (EMA50)
+        if closes and len(closes) >= 1:
+            precio_actual = closes[-1]
+            ema50 = features.get("ema50", 0)
+            if ema50 and ema50 > 0:
+                if direccion == "BUY" and precio_actual < ema50:
+                    nofx_ok = False  # No comprar bajo EMA50
+                elif direccion == "SELL" and precio_actual > ema50:
+                    nofx_ok = False  # No vender sobre EMA50
+        # Slope EMA20: si esta plana, no operar (rango disfrazado)
+        ema20_s = features.get("ema20_serie", [])
+        if len(ema20_s) >= 10:
+            slope_ema = abs(ema20_s[-1] - ema20_s[-10]) / max(ema20_s[-1], 1)
+            slope_min = SLOPE_MIN_METAL if is_metal else SLOPE_MIN_DEFAULT
+            if slope_ema < slope_min:
+                nofx_ok = False
+
+    pasa = tqs >= umbral and direccion != "NEUTRAL" and nofx_ok
+
+    asset_tag = "FX" if is_fx else ("METAL" if is_metal else ("CRYPTO" if is_crypto else "NO-FX"))
     result = {
         "momentum_score": m_score,
         "momentum_dir": m_dir,
@@ -369,12 +454,13 @@ def evaluar_senales(features, regimen, pesos_override=None):
         "pasa_umbral": pasa,
         "umbral_tqs": umbral,
         "is_forex": is_fx,
+        "is_crypto": is_crypto,
         "regimen": regimen,
     }
 
     if pasa:
         mlog("ENGINES", f"TQS={tqs:.3f}/{umbral} dir={direccion} [{regimen}] "
              f"mom={m_score:.2f} rev={r_score:.2f} str={s_score:.2f} brk={b_score:.2f}"
-             f" {'FX' if is_fx else 'NO-FX'}")
+             f" {asset_tag}")
 
     return result

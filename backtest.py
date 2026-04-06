@@ -25,7 +25,7 @@ import numpy as np
 # Agregar directorio actual al path para importar modulos del sistema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import tipo_activo, log as mlog
+from config import log as mlog
 from signal_engines import evaluar_senales, _is_forex
 
 
@@ -156,6 +156,91 @@ def _col(df, prefix):
     return None
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CURRENCY STRENGTH PARA BACKTEST
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Pares de referencia para calcular fuerza de cada divisa
+_CS_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+_CS_DATA = {}  # {pair: DataFrame con close y EMA20}
+
+
+def download_cs_data(tf_minutes, days):
+    """Descarga datos de los 7 majors para calcular currency strength."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return
+
+    tf_map = {15: "15m", 30: "30m", 60: "1h", 240: "4h"}
+    interval = tf_map.get(tf_minutes, "1h")
+    if tf_minutes <= 30 and days > 60:
+        days = 60
+
+    print("  Descargando datos de currency strength (7 majors)...")
+    for pair in _CS_PAIRS:
+        ticker = f"{pair}=X"
+        try:
+            df = yf.download(ticker, period=f"{days}d", interval=interval, progress=False)
+            if df.empty:
+                continue
+            # Flatten MultiIndex if present
+            if hasattr(df.columns, 'levels'):
+                df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            df.columns = [c.lower() for c in df.columns]
+            df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+            _CS_DATA[pair] = df
+        except Exception:
+            pass
+    print(f"  Currency strength: {len(_CS_DATA)}/7 pares cargados")
+
+
+def get_cs_at_index(symbol, idx):
+    """
+    Calcula currency strength para un simbolo en un indice temporal.
+    Replica la logica de data_feed._calc_currency_strength().
+    Returns: (s_base, s_quote)
+    """
+    if not _CS_DATA:
+        return 0.0, 0.0
+
+    sym = symbol.upper().replace("/", "")
+    if len(sym) < 6:
+        return 0.0, 0.0
+    target_base = sym[:3]
+    target_quote = sym[3:6]
+
+    scores = {}
+    counts = {}
+
+    for pair, df in _CS_DATA.items():
+        if idx >= len(df):
+            continue
+        row = df.iloc[idx]
+        precio = row.get("close", 0)
+        ema20 = row.get("ema20", 0)
+        if not precio or not ema20 or pd.isna(precio) or pd.isna(ema20):
+            continue
+
+        diff = (precio - ema20) / ema20
+        base = pair[:3]
+        quote = pair[3:6]
+
+        scores[base] = scores.get(base, 0.0) + diff
+        counts[base] = counts.get(base, 0) + 1
+        scores[quote] = scores.get(quote, 0.0) - diff  # Inverso
+        counts[quote] = counts.get(quote, 0) + 1
+
+    # Normalizar
+    for c in scores:
+        if counts.get(c, 0) > 0:
+            scores[c] = scores[c] / counts[c]
+
+    s_base = scores.get(target_base, 0.0)
+    s_quote = scores.get(target_quote, 0.0)
+    return round(s_base, 6), round(s_quote, 6)
+
+
 def build_snapshot(df, idx, symbol, tf):
     """Construye el snapshot de indicadores para una vela."""
     if idx < 50:
@@ -277,11 +362,19 @@ def build_snapshot(df, idx, symbol, tf):
         "vol_ratio": vol_ratio,
         "squeeze": squeeze,
         "adx": adx,
+        "ema50": ema50,
         "par": symbol,
         "currency_strength_base": 0,
         "currency_strength_quote": 0,
         "triangular_error": 0,
     }
+
+    # Currency strength (si hay datos descargados)
+    if _CS_DATA:
+        cs_base, cs_quote = get_cs_at_index(symbol, idx)
+        features["currency_strength_base"] = cs_base
+        features["currency_strength_quote"] = cs_quote
+        snapshot["currency_spread"] = round(cs_base - cs_quote, 6)
 
     return snapshot, features
 
@@ -431,6 +524,11 @@ def run_backtest(symbol, tf, days, use_ia, capital):
 
     # 1. Descargar datos
     df = download_data(symbol, tf, days)
+
+    # 1b. Descargar datos de currency strength (para forex)
+    from signal_engines import _is_forex
+    if _is_forex(symbol):
+        download_cs_data(tf, days)
 
     # 2. Calcular indicadores
     print("  Calculando indicadores...")

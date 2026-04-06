@@ -18,7 +18,7 @@ import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-from config import GROQ_KEYS, GEMINI_KEYS, CRYPTO, state, lock, log, data_path
+from config import GROQ_KEYS, GEMINI_KEYS, CRYPTO, state, lock, log, data_path, tipo_activo
 from portfolio_risk import check_correlacion
 
 # --- Rotacion de keys ---
@@ -120,6 +120,21 @@ def safety_filter(snapshot, context, symbol):
         return False, f"Sesion {session.get('name', '?')} - calidad {quality}/5 (minimo 3)"
 
     return True, "OK"
+
+
+def _sl_tp_por_activo(symbol):
+    """SL/TP en multiplos de ATR segun tipo de activo."""
+    t = tipo_activo(symbol)
+    if t == "forex":
+        return 1.5, 3.0
+    elif t == "metal":
+        return 2.0, 4.0   # Oro/plata: volatil, necesita espacio
+    elif t == "crypto":
+        return 2.0, 4.0   # Crypto: volatil
+    elif t in ("indice", "commodity"):
+        return 1.8, 3.6   # Indices/commodities: intermedio
+    else:
+        return 1.5, 3.0   # Stocks: como forex
 
 
 # === MODELO 1: ESTADISTICO LOCAL (sin IA, siempre gratis) ===================
@@ -941,9 +956,15 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         else:
             log("BRAIN", f"{symbol} TQS={tqs:.2f} < 0.65, skip IA")
 
+        # SL/TP segun tipo de activo
+        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
+
         result.update({
             "action": stats_result["action"],
             "confidence": stats_result["confidence"],
+            "sl_atr_mult": _sl_mult,
+            "tp_atr_mult": _tp_mult,
+            "risk_pct": 1.0,
             "reason": f"[Solo Stats] {stats_result['reason']}",
             "votos": {"stats": {"action": stats_result["action"], "confidence": stats_result["confidence"]}},
             "consensus": "1/1",
@@ -973,11 +994,14 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         # 5. Consensus
         consensus = _consensus_vote(stats_result, groq_result, gemini_result)
 
+        # SL/TP segun tipo de activo
+        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
+
         result.update({
             "action": consensus["action"],
             "confidence": consensus["confidence"],
-            "sl_atr_mult": 1.5,   # SL/TP/trailing fijos — la IA decide direccion, no gestion de riesgo
-            "tp_atr_mult": 3.0,
+            "sl_atr_mult": _sl_mult,
+            "tp_atr_mult": _tp_mult,
             "risk_pct": 1.0,
             "trailing_stop": "none",
             "reason": consensus["reason"],
