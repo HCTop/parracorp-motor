@@ -128,9 +128,9 @@ def _sl_tp_por_activo(symbol):
     if t == "forex":
         return 1.5, 3.0
     elif t == "metal":
-        return 2.0, 4.0   # Oro/plata: volatil, necesita espacio
+        return 2.0, 4.0   # Oro/plata: test TP 4.0
     elif t == "crypto":
-        return 2.0, 4.0   # Crypto: volatil
+        return 2.0, 4.0   # Crypto: test TP 4.0
     elif t in ("indice", "commodity"):
         return 1.8, 3.6   # Indices/commodities: intermedio
     else:
@@ -959,12 +959,21 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         # SL/TP segun tipo de activo
         _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
 
+        # Sin IA: riesgo segun confianza de Stats
+        stats_conf = stats_result["confidence"]
+        if stats_conf >= 85:
+            _risk = 1.5    # Stats muy seguro (sin IA, max 1.5%)
+        elif stats_conf >= 70:
+            _risk = 1.0
+        else:
+            _risk = 0.5    # Stats poco seguro, reducir riesgo
+
         result.update({
             "action": stats_result["action"],
             "confidence": stats_result["confidence"],
             "sl_atr_mult": _sl_mult,
             "tp_atr_mult": _tp_mult,
-            "risk_pct": 1.0,
+            "risk_pct": _risk,
             "reason": f"[Solo Stats] {stats_result['reason']}",
             "votos": {"stats": {"action": stats_result["action"], "confidence": stats_result["confidence"]}},
             "consensus": "1/1",
@@ -997,12 +1006,21 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         # SL/TP segun tipo de activo
         _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
 
+        # Riesgo dinamico segun confianza del consensus
+        conf = consensus["confidence"]
+        if conf >= 85:
+            _risk = 2.0    # Muy alta: IA y Stats alineados
+        elif conf >= 70:
+            _risk = 1.5    # Alta: buena confirmacion
+        else:
+            _risk = 1.0    # Normal
+
         result.update({
             "action": consensus["action"],
             "confidence": consensus["confidence"],
             "sl_atr_mult": _sl_mult,
             "tp_atr_mult": _tp_mult,
-            "risk_pct": 1.0,
+            "risk_pct": _risk,
             "trailing_stop": "none",
             "reason": consensus["reason"],
             "votos": consensus["votos"],
