@@ -175,8 +175,11 @@ WL_CATALOGO = {
 
 # Listas planas para compatibilidad
 WL_RECOMENDADA = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
-    "USDCAD", "EURJPY", "GBPJPY", "EURGBP", "XAUUSD",
+    "XAUUSD",   # Metal: +43% anual PF 1.33
+    "GBPJPY",   # Forex: +37% anual PF 1.37
+    "ETHUSD",   # Crypto: +36% anual PF 1.18
+    "EURJPY",   # Forex: volatil JPY cross
+    "SOLUSD",   # Crypto: volatil
 ]
 
 # Todos los opcionales (flat)
@@ -228,16 +231,16 @@ def cargar():
             for k in data:
                 if k in state:
                     state[k] = data[k]
-            # Sanitizar: watchlist solo debe tener WL_RECOMENDADA
+            # Sanitizar: watchlist solo debe tener simbolos del catalogo
             _all_catalog = set()
             for _syms in WL_CATALOGO.values():
                 _all_catalog.update(_syms)
             dirty = False
             wl = state["watchlist"]
-            extras = [s for s in wl if s not in WL_RECOMENDADA]
-            if extras:
-                state["watchlist"] = [s for s in wl if s in WL_RECOMENDADA]
-                print(f"[CONFIG] Eliminados {len(extras)} extras de watchlist: {extras}")
+            bad_wl = [s for s in wl if s not in _all_catalog]
+            if bad_wl:
+                state["watchlist"] = [s for s in wl if s in _all_catalog]
+                print(f"[CONFIG] Eliminados {len(bad_wl)} invalidos de watchlist: {bad_wl}")
                 dirty = True
             # Sanitizar opcional: solo simbolos del catalogo
             wl_op = state.get("watchlist_opcional", [])
