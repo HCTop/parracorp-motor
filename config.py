@@ -174,13 +174,7 @@ WL_CATALOGO = {
 }
 
 # Listas planas para compatibilidad
-WL_RECOMENDADA = [
-    "XAUUSD",   # Metal: +43% anual PF 1.33
-    "GBPJPY",   # Forex: +37% anual PF 1.37
-    "ETHUSD",   # Crypto: +36% anual PF 1.18
-    "EURJPY",   # Forex: volatil JPY cross
-    "SOLUSD",   # Crypto: volatil
-]
+WL_RECOMENDADA = []  # Vacia — el usuario elige manualmente desde la app
 
 # Todos los opcionales (flat)
 WL_OPCIONAL = []
