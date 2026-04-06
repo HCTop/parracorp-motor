@@ -51,7 +51,12 @@ def download_data(symbol, tf_minutes, days):
         "GBPAUD": "GBPAUD=X", "GBPNZD": "GBPNZD=X", "GBPCAD": "GBPCAD=X",
         "EURNZD": "EURNZD=X", "EURAUD": "EURAUD=X", "EURCAD": "EURCAD=X",
         "XAUUSD": "GC=F", "XAGUSD": "SI=F",
-        "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD",
+        "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
+        "AVAXUSD": "AVAX-USD", "LINKUSD": "LINK-USD", "DOTUSD": "DOT-USD",
+        "XRPUSD": "XRP-USD", "BNBUSD": "BNB-USD", "DOGEUSD": "DOGE-USD",
+        "ADAUSD": "ADA-USD", "MATICUSD": "MATIC-USD", "LTCUSD": "LTC-USD",
+        "NVDA": "NVDA", "TSLA": "TSLA", "AAPL": "AAPL", "MSFT": "MSFT",
+        "AMD": "AMD", "META": "META", "GOOGL": "GOOGL", "AMZN": "AMZN",
         "NAS100": "NQ=F", "US30": "YM=F", "SPX500": "ES=F",
         "USOIL": "CL=F",
     }
