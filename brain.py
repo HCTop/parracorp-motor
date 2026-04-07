@@ -119,6 +119,27 @@ def safety_filter(snapshot, context, symbol):
     if quality <= 2 and not is_crypto:
         return False, f"Sesion {session.get('name', '?')} - calidad {quality}/5 (minimo 3)"
 
+    # Filtro de sesion inteligente: bloquear off-hours segun tipo de activo
+    import datetime as _dt
+    h_utc = _dt.datetime.now(_dt.timezone.utc).hour
+    sym_upper = symbol.upper().replace("/", "")
+    if "JPY" in sym_upper:
+        # JPY pairs: Tokyo(00) a NY close(22)
+        if h_utc >= 22:
+            return False, f"Fuera de sesion para {symbol} (JPY: 00-22 UTC)"
+    elif any(x in sym_upper for x in ("AUD", "NZD")):
+        # AUD/NZD: Sydney a NY afternoon, baja 17-22
+        if 17 <= h_utc < 22:
+            return False, f"Fuera de sesion para {symbol} (AUD/NZD: baja actividad 17-22 UTC)"
+    elif is_crypto:
+        # Crypto: bloquear madrugada 22-07
+        if h_utc >= 22 or h_utc < 7:
+            return False, f"Fuera de sesion para {symbol} (crypto: 07-22 UTC)"
+    else:
+        # EUR/GBP/CHF/metales/otros: London+NY 07-22
+        if h_utc >= 22 or h_utc < 7:
+            return False, f"Fuera de sesion para {symbol} (07-22 UTC)"
+
     return True, "OK"
 
 

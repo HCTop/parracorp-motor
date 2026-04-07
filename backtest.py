@@ -415,8 +415,8 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
 
     context = {
         "signals_active": [],
-        "session": {"name": "London_NY", "quality": 8, "minutes_to_close": 999},
-        "session_quality": 8,
+        "session": {"name": "Backtest", "quality": 5, "minutes_to_close": 999},
+        "session_quality": 5,
         "session_fit": {"fit": "GOOD"},
         "bank_holiday": {},
         "high_impact_event": {},
@@ -556,6 +556,35 @@ def run_backtest(symbol, tf, days, use_ia, capital):
             if idx >= active_trade:
                 active_trade = None
             else:
+                continue
+
+        # Filtro de sesion inteligente: cada par opera en sus sesiones optimas
+        row_time = df.index[idx]
+        hour_utc = row_time.hour if hasattr(row_time, 'hour') else 12
+        sym_upper = symbol.upper().replace("/", "")
+
+        # JPY pairs: Tokyo(00-09) + London(07-16) + NY(13-22) = 00-22
+        if "JPY" in sym_upper:
+            if hour_utc >= 22:  # Solo bloquear 22-00
+                continue
+        # AUD/NZD pairs: Sydney(22-07) + Tokyo(00-09) + London + NY = casi 24h, bloquear 17-22
+        elif any(x in sym_upper for x in ("AUD", "NZD")) and "USD" in sym_upper:
+            if 17 <= hour_utc < 22:  # Baja actividad tarde NY
+                continue
+        # Metales: London(07-16) + NY(13-22), bloquear 22-07
+        elif any(x in sym_upper for x in ("XAU", "XAG", "XPT", "XPD")):
+            if hour_utc >= 22 or hour_utc < 7:
+                continue
+        # Crypto: mejores horas 07-22 (Europa+US), bloquear madrugada
+        elif sym_upper in ("BTCUSD","ETHUSD","SOLUSD","AVAXUSD","XRPUSD","BNBUSD",
+                           "DOGEUSD","ADAUSD","LINKUSD","DOTUSD","MATICUSD","LTCUSD",
+                           "BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","XRPUSDT","BNBUSDT",
+                           "DOGEUSDT","ADAUSDT","LINKUSDT","DOTUSDT","MATICUSDT"):
+            if hour_utc >= 22 or hour_utc < 7:
+                continue
+        # EUR/GBP/CHF/CAD: London(07-16) + NY(13-22), bloquear 22-07
+        else:
+            if hour_utc >= 22 or hour_utc < 7:
                 continue
 
         snapshot, features = build_snapshot(df, idx, symbol, tf)
