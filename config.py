@@ -9,6 +9,18 @@ import os
 import json
 import threading
 
+# --- Cargar .env si existe (para backtest local) ---
+_env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.isfile(_env_file):
+    with open(_env_file) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                _v = _v.strip().strip('"').strip("'")
+                if _k.strip() and _v:
+                    os.environ.setdefault(_k.strip(), _v)
+
 # --- Directorio persistente (Railway Volume o local) ---
 _data_dir = "/data" if os.path.isdir("/data") and os.access("/data", os.W_OK) else None
 _local_dir = os.path.dirname(os.path.abspath(__file__))

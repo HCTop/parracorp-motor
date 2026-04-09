@@ -121,7 +121,7 @@ def safety_filter(snapshot, context, symbol):
 
     # Filtro de sesion inteligente: bloquear off-hours segun tipo de activo
     import datetime as _dt
-    h_utc = _dt.datetime.now(_dt.timezone.utc).hour
+    h_utc = snapshot.get("_hour_utc", _dt.datetime.now(_dt.timezone.utc).hour)
     sym_upper = symbol.upper().replace("/", "")
     if "JPY" in sym_upper:
         # JPY pairs: Tokyo(00) a NY close(22)

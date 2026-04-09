@@ -1257,6 +1257,30 @@ def logs_download():
     )
 
 
+@app.route("/trades/download")
+def trades_download():
+    """Descarga el fichero trades.jsonl con TRADE_OPEN/TRADE_CLOSE estructurados."""
+    from flask import Response
+    path = cfg.data_path("trades.jsonl")
+    content = ""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            content = f"Error leyendo trades.jsonl: {e}"
+    if not content:
+        content = "trades.jsonl vacio o no existe todavia"
+    return Response(
+        content,
+        mimetype="application/x-ndjson",
+        headers={
+            "Content-Disposition": "attachment; filename=trades.jsonl",
+            "Content-Type": "application/x-ndjson; charset=utf-8",
+        }
+    )
+
+
 @app.route("/logs/dates")
 def logs_dates():
     """Lista fechas disponibles de logs."""

@@ -14,6 +14,17 @@ from config import data_path, log as mlog, state
 
 SIGNALS_FILE = data_path("signals_v3.json")
 HISTORY_FILE = data_path("history_v3.json")
+TRADES_JSONL = data_path("trades.jsonl")
+
+
+def _append_trade_event(event_type, payload):
+    """Persiste un evento de trade (TRADE_OPEN/TRADE_CLOSE) en trades.jsonl."""
+    try:
+        record = {"event": event_type, "ts": int(time.time()), **payload}
+        with open(TRADES_JSONL, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        mlog("TRADES", f"Error escribiendo {event_type}: {e}")
 
 _signals = []
 _history = []
@@ -110,6 +121,42 @@ def emit(symbol, action, entry_price, sl, tp, timeframe="60",
 
         mlog("SIGNAL", f"EMITIDA {sig_id} {action} {symbol} @{entry_price} "
              f"SL={sl} TP={tp} TQS={tqs:.2f} [{regimen}] {consensus}")
+
+        # Log estructurado del trade abierto
+        sl_dist = abs(entry_price - sl)
+        tp_dist = abs(entry_price - tp)
+        _append_trade_event("TRADE_OPEN", {
+            "id": sig_id,
+            "symbol": symbol,
+            "action": action,
+            "timeframe": str(timeframe),
+            "entry": round(entry_price, 6),
+            "sl": round(sl, 6),
+            "tp": round(tp, 6),
+            "sl_dist": round(sl_dist, 6),
+            "tp_dist": round(tp_dist, 6),
+            "rr_ratio": rr_ratio,
+            "atr": atr,
+            "tqs": tqs,
+            "regimen": regimen,
+            "confidence": confidence,
+            "consensus": consensus,
+            "votos": votos or {},
+            "trailing_stop": trailing_stop,
+            "risk_pct": risk_pct,
+            "riesgo_usd": riesgo_usd,
+            "lote": lote,
+            "lote_std": lote_std,
+            "unidades": unidades,
+            "mtf_alignment": mtf_alignment,
+            "of_delta": of_delta,
+            "sr_distance_pips": sr_distance,
+            "divergence": divergence,
+            "reason": reason[:300] if reason else "",
+            "groq_analysis": groq_analysis[:300] if groq_analysis else "",
+            "capital": state.get("capital", 0),
+            "max_ops": state.get("max_ops", 0),
+        })
         return signal
 
 
@@ -207,6 +254,31 @@ def check_prices(symbol, current_price):
 
                 mlog("SIGNAL", f"{sig['id']} {hit} {symbol} PnL={pnl_pct:+.2f}% ${sig['pnl_usd']:+.2f}")
 
+                # Log estructurado del trade cerrado
+                duration_s = sig["exit_ts"] - sig.get("timestamp", sig["exit_ts"])
+                _append_trade_event("TRADE_CLOSE", {
+                    "id": sig["id"],
+                    "symbol": symbol,
+                    "action": action,
+                    "status": hit,
+                    "entry": entry,
+                    "exit": round(current_price, 6),
+                    "sl_final": sig["sl"],   # SL al cierre (puede haberse movido por trailing)
+                    "tp": sig["tp"],
+                    "trailing_stop": trailing,
+                    "pnl_pct": sig["pnl_pct"],
+                    "pnl_usd": sig["pnl_usd"],
+                    "duration_s": duration_s,
+                    "duration_min": round(duration_s / 60, 1),
+                    "lote": sig.get("lote", 0),
+                    "tqs": sig.get("trade_quality_score", 0),
+                    "regimen": sig.get("regimen", ""),
+                    "confidence": sig.get("confidence", 0),
+                    "consensus": sig.get("consensus", ""),
+                    "fallos_consecutivos": state.get("fallos_consecutivos", 0),
+                    "daily_pnl_after": state.get("daily_pnl", 0),
+                })
+
         # Limpiar cerradas de activas
         _signals[:] = [s for s in _signals if s["status"] == "ACTIVE"]
 
@@ -240,6 +312,29 @@ def close_signal(signal_id, current_price=None, status="CANCELLED"):
                 _history.append(dict(sig))
                 _signals.remove(sig)
                 _save()
+
+                # Log estructurado del cierre manual
+                duration_s = sig["exit_ts"] - sig.get("timestamp", sig["exit_ts"])
+                _append_trade_event("TRADE_CLOSE", {
+                    "id": sig["id"],
+                    "symbol": sig["symbol"],
+                    "action": sig["action"],
+                    "status": status,
+                    "entry": sig["entry_price"],
+                    "exit": sig.get("exit_price", 0),
+                    "sl_final": sig.get("sl", 0),
+                    "tp": sig.get("tp", 0),
+                    "trailing_stop": sig.get("trailing_stop", "none"),
+                    "pnl_pct": sig.get("pnl_pct", 0),
+                    "pnl_usd": sig.get("pnl_usd", 0),
+                    "duration_s": duration_s,
+                    "duration_min": round(duration_s / 60, 1),
+                    "lote": sig.get("lote", 0),
+                    "tqs": sig.get("trade_quality_score", 0),
+                    "regimen": sig.get("regimen", ""),
+                    "confidence": sig.get("confidence", 0),
+                    "manual": True,
+                })
                 return sig
     return None
 

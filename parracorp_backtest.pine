@@ -1,11 +1,12 @@
 // =============================================================================
-// ParraCorp Trading System v3.1 - Backtest Strategy
-// Replica del motor completo: 4 Engines + TQS + Divergencias + Regimen
+// ParraCorp Trading System v3.1 - Backtest Strategy (PRODUCTION REPLICA)
+// Replica EXACTA del motor: 4 Engines + TQS + Divergencias + Regimen
+// + Modelo Estadistico (11 votos) + Simulacion IA
 // =============================================================================
 // USO: Pegar en TradingView > Pine Script Editor > Add to chart
-// Timeframes recomendados: 15m, 1H, 4H
-// Pares recomendados: GBPJPY, GBPNZD, GBPAUD, EURJPY, EURNZD, GBPCAD,
-//                     XAUUSD, BTCUSD, NAS100, EURUSD, GBPUSD, USDJPY
+// Equivale a:
+//   python backtest.py --symbol XAUUSD --tf 60 --days 30 --no-ia --capital 250
+//   python backtest.py --symbol XAUUSD --tf 60 --days 30 --capital 250
 // =============================================================================
 
 //@version=6
@@ -16,12 +17,16 @@ strategy("ParraCorp v3.1 Backtest", overlay=true, default_qty_type=strategy.perc
      max_bars_back=500)
 
 // =============================================================================
-// INPUTS
+// INPUTS (equivalentes a --symbol, --tf, --capital, --no-ia)
 // =============================================================================
-grp_tqs = "Trade Quality Score"
-umbral_tqs      = input.float(0.65, "Umbral TQS (forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
-umbral_tqs_nofx = input.float(0.50, "Umbral TQS (no-forex)", minval=0.1, maxval=1.0, step=0.05, group=grp_tqs)
-is_forex        = input.bool(true, "Es par Forex?", group=grp_tqs)
+grp_asset = "Tipo de Activo"
+asset_type = input.string("forex", "Tipo de activo", options=["forex", "metal", "crypto", "indice", "commodity", "stock"], group=grp_asset, tooltip="Debe coincidir con el par cargado. Forex: EURUSD,GBPJPY. Metal: XAUUSD. Crypto: BTCUSD. Indice: NAS100,US30")
+pair_has_jpy = input.bool(false, "Par tiene JPY?", group=grp_asset, tooltip="Activar para USDJPY, EURJPY, GBPJPY, etc.")
+pair_has_aud_nzd = input.bool(false, "Par tiene AUD o NZD?", group=grp_asset, tooltip="Activar para AUDUSD, NZDUSD, AUDNZD, etc.")
+
+grp_ia = "Modo IA (--no-ia / con IA)"
+use_ia = input.bool(false, "Activar simulacion IA", group=grp_ia, tooltip="OFF = solo modelo estadistico (--no-ia). ON = Stats + proxy IA (requiere mas confirmaciones)")
+ia_confidence_min = input.int(65, "Confianza minima IA", minval=30, maxval=95, step=5, group=grp_ia, tooltip="Solo con IA: confianza minima del consensus para operar")
 
 grp_risk = "Risk Management"
 riesgo_pct  = input.float(1.0, "Riesgo % por trade", minval=0.1, maxval=5.0, step=0.1, group=grp_risk)
@@ -30,15 +35,25 @@ max_ops     = input.int(3, "Max operaciones simultaneas", minval=1, maxval=10, g
 trailing_type = input.string("breakeven", "Trailing Stop", options=["none", "breakeven", "atr1", "atr2"], group=grp_risk)
 
 grp_filter = "Filtros"
-use_session    = input.bool(true, "Filtrar por sesion (solo London+NY)", group=grp_filter)
-use_adx_filter = input.bool(true, "Filtro ADX > 15", group=grp_filter)
+use_session    = input.bool(true, "Filtrar por sesion (por tipo de par)", group=grp_filter)
 use_ema200     = input.bool(true, "Filtro EMA200 (tendencia mayor)", group=grp_filter)
-use_divergence = input.bool(true, "Penalizar divergencias", group=grp_filter)
 
 grp_visual = "Visual"
 show_engines = input.bool(true, "Mostrar panel engines", group=grp_visual)
 show_sr      = input.bool(true, "Mostrar S/R fractales", group=grp_visual)
 show_ema     = input.bool(true, "Mostrar EMAs", group=grp_visual)
+
+// =============================================================================
+// ASSET TYPE FLAGS (derivados del input)
+// =============================================================================
+is_forex  = asset_type == "forex"
+is_metal  = asset_type == "metal"
+is_crypto = asset_type == "crypto"
+is_indice = asset_type == "indice"
+is_commodity = asset_type == "commodity"
+// has_currency_strength: solo forex tiene CS real; en Pine usamos proxy
+// Para NO-forex, strength weight = 0 (como produccion)
+has_cs = is_forex
 
 // =============================================================================
 // INDICADORES BASE (replica de data_feed.py _compute_snapshot)
@@ -75,10 +90,10 @@ vol_ratio = atr_media20 > 0 ? atr14 / atr_media20 : 1.0
 bb_range = bb_upper - bb_lower
 bb_distance = bb_range > 0 ? (close - (bb_lower + bb_range / 2)) / (bb_range / 2) : 0.0
 
-// Squeeze (BB < 3*ATR)
+// Squeeze (BB < 3*ATR) - replica data_feed.py linea 518
 squeeze = bb_range < (atr14 * 3.0)
 
-// Supertrend (factor 3, length 14 via HL2)
+// Supertrend (factor 3, length 14 via HL2) - replica data_feed.py lineas 498-516
 hl2_val = (high + low) / 2
 st_up = hl2_val + 3.0 * atr14
 st_lo = hl2_val - 3.0 * atr14
@@ -99,7 +114,7 @@ else
     else
         st_line := st_up
 
-// Z-Score (50 periodos)
+// Z-Score (50 periodos) - replica data_feed.py lineas 577-579
 mean50 = ta.sma(close, 50)
 std50 = ta.stdev(close, 50)
 zscore = std50 > 0 ? (close - mean50) / std50 : 0.0
@@ -107,18 +122,8 @@ zscore = std50 > 0 ? (close - mean50) / std50 : 0.0
 // Momentum (10)
 mom10 = ta.mom(close, 10)
 
-// EMA 35/50 Cross
-ema35_cross_up   = ta.crossover(ema35, ema50)
-ema35_cross_down = ta.crossunder(ema35, ema50)
-
-// Ichimoku
-tenkan  = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
-kijun   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
-span_a  = (tenkan + kijun) / 2
-span_b  = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
-
 // =============================================================================
-// MOTOR 1: MOMENTUM (signal_engines.py motor_momentum)
+// MOTOR 1: MOMENTUM (signal_engines.py motor_momentum lineas 22-50)
 // =============================================================================
 slope_period = 5
 ema20_slope  = (ema20 - ema20[slope_period]) / slope_period
@@ -140,7 +145,7 @@ else if ema20_slope < 0 and price_mom < 0
     m_dir := "SELL"
 
 // =============================================================================
-// MOTOR 2: MEAN REVERSION (signal_engines.py motor_mean_reversion)
+// MOTOR 2: MEAN REVERSION (signal_engines.py motor_mean_reversion lineas 57-93)
 // =============================================================================
 float rsi_ext = 0.0
 if rsi14 > 70
@@ -164,22 +169,24 @@ if math.abs(zscore) >= 1.0 or rsi_ext > 0 or math.abs(bb_distance) >= 0.5
         r_dir := zscore > 0 ? "SELL" : "BUY"
 
 // =============================================================================
-// MOTOR 3: CURRENCY STRENGTH (simplificado - sin datos multi-par)
-// En backtest single-chart no hay currency strength real.
-// Usamos proxy: distancia relativa al EMA20 como fuerza.
+// MOTOR 3: CURRENCY STRENGTH (signal_engines.py motor_currency_strength)
+// NOTA: En Pine single-chart NO hay currency strength real.
+// Para FOREX: usamos proxy (distancia a EMA20). Peso 30%.
+// Para NO-FOREX: peso 0% (como produccion), no afecta TQS.
 // =============================================================================
 cs_proxy = close != 0 ? (close - ema20) / close : 0.0
 float s_score = 0.0
 string s_dir = "NEUTRAL"
-if is_forex
-    s_score := math.min(math.abs(cs_proxy) * 100, 1.0)  // proxy
+if has_cs
+    // Proxy: spread normalizado como en produccion (spread / 0.01)
+    s_score := math.min(math.abs(cs_proxy) * 100, 1.0)
     if cs_proxy > 0.001
         s_dir := "BUY"
     else if cs_proxy < -0.001
         s_dir := "SELL"
 
 // =============================================================================
-// MOTOR 4: VOLATILITY BREAKOUT (signal_engines.py motor_breakout)
+// MOTOR 4: VOLATILITY BREAKOUT (signal_engines.py motor_breakout lineas 127-153)
 // =============================================================================
 expansion = vol_ratio > 1.0 ? math.min((vol_ratio - 1.0) / 0.5, 1.0) : 0.0
 adx_n = adx_val > 0 ? math.min(adx_val / 50.0, 1.0) : 0.0
@@ -201,47 +208,65 @@ else if adx_val > 25
 b_score := math.min(b_score, 1.0)
 
 // =============================================================================
-// REGIMEN DETECTOR (regime_detector.py)
+// REGIMEN DETECTOR (regime_detector.py detectar_regimen lineas 70-109)
+// PRODUCCION: ADX>30 trending, ATR>ATR20*1.5 alta_vol, sin_dir check
 // =============================================================================
+bool t_fuerte = adx_val > 30
+bool t_debil  = adx_val < 20
+bool alta_vol = atr14 > atr_media20 * 1.5
+bool baja_vol = atr14 < atr_media20 * 0.7
+bool sin_dir  = ema50 != 0 ? math.abs(ema20 - ema50) / ema50 < 0.001 : false
+
 string regimen = "NORMAL"
-if adx_val > 25 and vol_ratio > 1.3
+if t_fuerte and alta_vol
     regimen := "TRENDING_VOLATILE"
-else if adx_val > 25 and vol_ratio <= 1.3
+else if t_fuerte and not alta_vol
     regimen := "TRENDING_CALM"
-else if adx_val < 18 and vol_ratio < 0.8
+else if t_debil and baja_vol
     regimen := "RANGING"
-else if adx_val < 15 and vol_ratio < 0.7
+else if alta_vol and t_debil
     regimen := "CHOPPY"
+else if t_debil and sin_dir
+    regimen := "RANGING"
 
 // =============================================================================
-// TRADE QUALITY SCORE (TQS)
+// TRADE QUALITY SCORE (signal_engines.py lineas 198-256)
+// Pesos EXACTOS de produccion por regimen y tipo de activo
 // =============================================================================
-// Pesos por regimen (replica signal_engines.py)
-float w_mom = 0.40
-float w_rev = 0.20
-float w_str = is_forex ? 0.30 : 0.00
-float w_brk = is_forex ? 0.10 : 0.30
 
-if regimen == "TRENDING_VOLATILE"
-    w_mom := is_forex ? 0.60 : 0.65
-    w_rev := is_forex ? 0.05 : 0.10
-    w_str := is_forex ? 0.30 : 0.00
-    w_brk := is_forex ? 0.05 : 0.25
-else if regimen == "TRENDING_CALM"
-    w_mom := is_forex ? 0.50 : 0.55
-    w_rev := is_forex ? 0.10 : 0.20
-    w_str := is_forex ? 0.30 : 0.00
-    w_brk := is_forex ? 0.10 : 0.25
-else if regimen == "RANGING"
-    w_mom := is_forex ? 0.10 : 0.15
-    w_rev := is_forex ? 0.50 : 0.55
-    w_str := is_forex ? 0.30 : 0.00
-    w_brk := is_forex ? 0.10 : 0.30
+// --- Pesos FOREX (PESOS_REGIMEN) ---
+float w_mom_fx_tv = regimen == "TRENDING_VOLATILE" ? 0.60 : regimen == "TRENDING_CALM" ? 0.50 : regimen == "RANGING" ? 0.10 : 0.40
+float w_rev_fx_tv = regimen == "TRENDING_VOLATILE" ? 0.05 : regimen == "TRENDING_CALM" ? 0.10 : regimen == "RANGING" ? 0.50 : 0.20
+float w_str_fx_tv = 0.30  // siempre 0.30 para forex
+float w_brk_fx_tv = regimen == "TRENDING_VOLATILE" ? 0.05 : regimen == "TRENDING_CALM" ? 0.10 : regimen == "RANGING" ? 0.10 : 0.10
 
-float tqs = regimen == "CHOPPY" ? 0.0 : w_mom * m_score + w_rev * r_score + w_str * s_score + w_brk * b_score
+// --- Pesos NO-FOREX (PESOS_REGIMEN_NO_FX) ---
+float w_mom_nfx = regimen == "TRENDING_VOLATILE" ? 0.65 : regimen == "TRENDING_CALM" ? 0.55 : regimen == "RANGING" ? 0.15 : 0.45
+float w_rev_nfx = regimen == "TRENDING_VOLATILE" ? 0.10 : regimen == "TRENDING_CALM" ? 0.20 : regimen == "RANGING" ? 0.55 : 0.25
+float w_str_nfx = 0.00  // sin currency strength
+float w_brk_nfx = regimen == "TRENDING_VOLATILE" ? 0.25 : regimen == "TRENDING_CALM" ? 0.25 : regimen == "RANGING" ? 0.30 : 0.30
+
+// Seleccionar pesos segun tipo
+float w_mom = is_forex ? w_mom_fx_tv : w_mom_nfx
+float w_rev = is_forex ? w_rev_fx_tv : w_rev_nfx
+float w_str = is_forex ? w_str_fx_tv : w_str_nfx
+float w_brk = is_forex ? w_brk_fx_tv : w_brk_nfx
+
+// Bloqueo por regimen segun tipo de activo (signal_engines.py lineas 374-382)
+// Forex: solo CHOPPY bloqueado
+// Metal: solo CHOPPY bloqueado
+// Crypto: RANGING y CHOPPY bloqueados
+// Otros NO-FX: RANGING y CHOPPY bloqueados
+bool regimen_bloqueado = false
+if regimen == "CHOPPY"
+    regimen_bloqueado := true
+else if not is_forex and not is_metal and regimen == "RANGING"
+    regimen_bloqueado := true  // crypto, indice, commodity, stock
+
+float tqs = regimen_bloqueado ? 0.0 : w_mom * m_score + w_rev * r_score + w_str * s_score + w_brk * b_score
 
 // =============================================================================
-// DIVERGENCIAS (signal_engines.py detectar_divergencias)
+// DIVERGENCIAS (signal_engines.py detectar_divergencias lineas 160-190)
 // =============================================================================
 lookback_div = 5
 precio_max_rec = ta.highest(close, lookback_div)
@@ -256,15 +281,16 @@ rsi_min_ant = ta.lowest(rsi14[lookback_div], lookback_div)
 bool bearish_div = precio_max_rec > precio_max_ant and rsi_max_rec < rsi_max_ant
 bool bullish_div = precio_min_rec < precio_min_ant and rsi_min_rec > rsi_min_ant
 
-// Penalizacion divergencias
-if use_divergence
-    if bearish_div and m_dir == "BUY"
-        tqs := tqs * 0.7
-    if bullish_div and m_dir == "SELL"
-        tqs := tqs * 0.7
+string div_signal = bearish_div ? "BEARISH_DIV" : bullish_div ? "BULLISH_DIV" : "NONE"
+
+// Penalizacion divergencias (signal_engines.py lineas 394-398)
+if bearish_div and m_dir == "BUY"
+    tqs := tqs * 0.7
+if bullish_div and m_dir == "SELL"
+    tqs := tqs * 0.7
 
 // =============================================================================
-// DIRECCION CONSENSUS
+// DIRECCION CONSENSUS (signal_engines.py determinar_direccion_consensus)
 // =============================================================================
 float buy_score_total  = (m_dir == "BUY" ? m_score : 0) + (r_dir == "BUY" ? r_score : 0) + (s_dir == "BUY" ? s_score : 0)
 float sell_score_total = (m_dir == "SELL" ? m_score : 0) + (r_dir == "SELL" ? r_score : 0) + (s_dir == "SELL" ? s_score : 0)
@@ -276,10 +302,39 @@ else if sell_score_total > buy_score_total and sell_score_total > 0.3
     direccion := "SELL"
 
 // =============================================================================
-// SOPORTE / RESISTENCIA FRACTAL
+// UMBRALES TQS POR TIPO DE ACTIVO (signal_engines.py lineas 215-223)
 // =============================================================================
-fractal_hi = ta.pivothigh(high, 5, 5)
-fractal_lo = ta.pivotlow(low, 5, 5)
+float umbral = is_forex ? 0.65 : is_metal ? 0.52 : is_crypto ? 0.62 : 0.55
+
+// =============================================================================
+// FILTROS NO-FOREX (signal_engines.py lineas 410-436)
+// ADX minimo, EMA50 trend filter, EMA20 slope filter
+// =============================================================================
+bool nofx_ok = true
+if not is_forex
+    // ADX minimo por tipo (lineas 413-420)
+    float adx_min_nfx = is_crypto ? 25.0 : is_metal ? 18.0 : 22.0
+    if adx_val < adx_min_nfx
+        nofx_ok := false
+
+    // Solo operar en direccion de EMA50 (lineas 422-429)
+    if ema50 > 0
+        if direccion == "BUY" and close < ema50
+            nofx_ok := false
+        else if direccion == "SELL" and close > ema50
+            nofx_ok := false
+
+    // Slope EMA20: si plana, no operar (lineas 431-435)
+    float slope_ema20_10 = math.abs(ema20 - ema20[10]) / math.max(ema20, 1.0)
+    float slope_min = is_metal ? 0.002 : 0.005
+    if slope_ema20_10 < slope_min
+        nofx_ok := false
+
+// =============================================================================
+// SOPORTE / RESISTENCIA FRACTAL (sr_engine.py - ventana 2 como produccion)
+// =============================================================================
+fractal_hi = ta.pivothigh(high, 2, 2)
+fractal_lo = ta.pivotlow(low, 2, 2)
 
 var float sr_res1 = na
 var float sr_res2 = na
@@ -294,69 +349,255 @@ if not na(fractal_lo)
     sr_sup1 := fractal_lo
 
 // =============================================================================
-// FILTROS DE CALIDAD
+// FILTRO DE SESION POR TIPO DE PAR (backtest.py lineas 562-588)
 // =============================================================================
-// Sesion (UTC): London 07-16, NY 12-21
 hour_utc = hour(time, "UTC")
-in_session = not use_session or (hour_utc >= 7 and hour_utc <= 21)
+bool in_session = true
+if use_session
+    if pair_has_jpy
+        // JPY pairs: bloquear 22-00 UTC
+        in_session := hour_utc < 22
+    else if pair_has_aud_nzd
+        // AUD/NZD: bloquear 17-22 UTC
+        in_session := not (hour_utc >= 17 and hour_utc < 22)
+    else if is_metal
+        // Metales: London+NY 07-22 UTC
+        in_session := hour_utc >= 7 and hour_utc < 22
+    else if is_crypto
+        // Crypto: mejores horas 07-22
+        in_session := hour_utc >= 7 and hour_utc < 22
+    else
+        // EUR/GBP/CHF/CAD y otros: 07-22 UTC
+        in_session := hour_utc >= 7 and hour_utc < 22
 
-// ADX minimo
-adx_ok = not use_adx_filter or adx_val > 15
+// ADX filtro para forex (produccion usa adx_min del regimen, aqui simplificado)
+bool adx_ok = true
+if is_forex
+    float adx_min_reg = regimen == "TRENDING_VOLATILE" ? 28.0 : regimen == "TRENDING_CALM" ? 25.0 : regimen == "RANGING" ? 15.0 : 20.0
+    // No filtrar por ADX minimo del regimen aqui, ya que el TQS ya lo maneja
+    // Solo filtro basico: ADX > 15 para forex
+    adx_ok := adx_val > 15
 
 // EMA200 concordancia
-ema200_ok = not use_ema200 or (direccion == "BUY" and close > ema200) or (direccion == "SELL" and close < ema200) or na(ema200)
-
-// Umbral TQS
-float umbral = is_forex ? umbral_tqs : umbral_tqs_nofx
-bool pasa_tqs = tqs >= umbral and direccion != "NEUTRAL"
-
-// EMA35/50 cross bonus
-if ema35_cross_up and direccion == "BUY"
-    tqs := math.min(tqs * 1.15, 1.0)  // bonus golden cross
-if ema35_cross_down and direccion == "SELL"
-    tqs := math.min(tqs * 1.15, 1.0)  // bonus death cross
+bool ema200_ok = not use_ema200 or (direccion == "BUY" and close > ema200) or (direccion == "SELL" and close < ema200) or na(ema200)
 
 // =============================================================================
-// SL / TP CALCULATION (replica brain.py)
+// MODELO ESTADISTICO (brain.py modelo_estadistico lineas 163-326)
+// Sistema de 11 votos por features cuantitativas
 // =============================================================================
-float sl_distance = atr14 * 1.5
-float tp_distance = sl_distance * rr_minimo
+int votes_buy  = 0
+int votes_sell = 0
 
-// Ajuste S/R: SL detras del soporte/resistencia mas cercano
+// 1. TQS alto (>= 0.70)
+if tqs >= 0.70
+    if direccion == "BUY"
+        votes_buy += 1
+    else if direccion == "SELL"
+        votes_sell += 1
+
+// 2. Momentum + ADX (mom_score > 0.7 y adx > 25)
+if m_score > 0.7 and adx_val > 25
+    if m_dir == "BUY"
+        votes_buy += 1
+    else if m_dir == "SELL"
+        votes_sell += 1
+
+// 3. EMA alignment (precio > ema9 > ema20 > ema50)
+if close > 0 and ema9 > 0 and ema20 > 0 and ema50 > 0
+    if close > ema9 and ema9 > ema20 and ema20 > ema50
+        votes_buy += 1
+    else if close < ema9 and ema9 < ema20 and ema20 < ema50
+        votes_sell += 1
+
+// 4. RSI confirmacion (>55 para BUY, <45 para SELL)
+if rsi14 > 55 and direccion == "BUY"
+    votes_buy += 1
+else if rsi14 < 45 and direccion == "SELL"
+    votes_sell += 1
+
+// 5. Z-score extremo (|z| > 2.0)
+if math.abs(zscore) > 2.0
+    if zscore < 0
+        votes_buy += 1
+    else
+        votes_sell += 1
+
+// 6. Squeeze + vol_ratio > 1.4
+if squeeze and vol_ratio > 1.4
+    if direccion == "BUY"
+        votes_buy += 1
+    else if direccion == "SELL"
+        votes_sell += 1
+
+// 7. Breakout score alto (> 0.7)
+if b_score > 0.7
+    if direccion == "BUY"
+        votes_buy += 1
+    else if direccion == "SELL"
+        votes_sell += 1
+
+// 8. Currency spread (proxy, solo forex)
+if has_cs and math.abs(cs_proxy) > 0.0008
+    if cs_proxy > 0
+        votes_buy += 1
+    else
+        votes_sell += 1
+
+// 9. Divergencia
+if div_signal == "BULLISH_DIV"
+    votes_buy += 1
+else if div_signal == "BEARISH_DIV"
+    votes_sell += 1
+
+// 10. MTF alignment (no disponible en Pine single-TF, skip)
+// 11. Order flow (no disponible en Pine, skip)
+
+// --- Decision Stats (brain.py lineas 293-314) ---
+string stats_action = "WAIT"
+int stats_confidence = 40
+
+if votes_buy >= 3 and votes_buy > votes_sell
+    stats_action := "BUY"
+    stats_confidence := math.min(55 + votes_buy * 8, 95)
+else if votes_sell >= 3 and votes_sell > votes_buy
+    stats_action := "SELL"
+    stats_confidence := math.min(55 + votes_sell * 8, 95)
+else if votes_buy > votes_sell and votes_buy >= 2
+    stats_action := "BUY"
+    stats_confidence := math.min(45 + votes_buy * 8, 70)
+else if votes_sell > votes_buy and votes_sell >= 2
+    stats_action := "SELL"
+    stats_confidence := math.min(45 + votes_sell * 8, 70)
+
+// =============================================================================
+// SIMULACION IA (proxy del consensus 2/3 de brain.py)
+// Cuando use_ia=true, simulamos que Groq+Gemini confirman si:
+//   - TQS es alto (>= umbral + 0.10 bonus)
+//   - Stats tiene confianza alta
+//   - Hay confirmacion adicional (EMA200 o Supertrend concuerda)
+// Esto simula que la IA rara vez contradice signals fuertes
+// =============================================================================
+string final_action = "WAIT"
+int final_confidence = 0
+
+if not use_ia
+    // --- MODO --no-ia: Solo Stats (brain.py lineas 974-1001) ---
+    final_action := stats_action
+    final_confidence := stats_confidence
+else
+    // --- MODO CON IA: Stats + confirmaciones extra como proxy de IA ---
+    if stats_action == "WAIT"
+        final_action := "WAIT"
+        final_confidence := stats_confidence
+    else
+        // Simular voto IA: confirma si hay evidencia fuerte
+        int ia_confirms = 0
+
+        // Groq proxy: confirma si TQS alto + direccion clara
+        if tqs >= umbral + 0.05 and stats_confidence >= 60
+            ia_confirms += 1
+
+        // Gemini proxy: confirma si EMA200 concuerda + supertrend concuerda
+        bool st_agrees = (stats_action == "BUY" and st_dir == "UP") or (stats_action == "SELL" and st_dir == "DOWN")
+        bool ema200_agrees = na(ema200) or (stats_action == "BUY" and close > ema200) or (stats_action == "SELL" and close < ema200)
+        if st_agrees and ema200_agrees
+            ia_confirms += 1
+
+        // Consensus: Stats + al menos 1 IA confirma (2/3 votos)
+        if ia_confirms >= 1
+            final_action := stats_action
+            // IA boost: confianza sube si ambas confirman
+            final_confidence := ia_confirms == 2 ? math.min(stats_confidence + 15, 95) : math.min(stats_confidence + 5, 90)
+        else
+            // IA no confirma: WAIT (veto)
+            final_action := "WAIT"
+            final_confidence := 30
+
+        // Filtro de confianza minima
+        if final_confidence < ia_confidence_min
+            final_action := "WAIT"
+
+// =============================================================================
+// SEÑAL DE ENTRADA FINAL
+// =============================================================================
+bool pasa_tqs = tqs >= umbral and direccion != "NEUTRAL" and not regimen_bloqueado
+bool pasa_filtros = in_session and adx_ok and ema200_ok and nofx_ok
+bool pasa_stats = final_action != "WAIT"
+
+bool signal_buy  = pasa_tqs and pasa_filtros and pasa_stats and final_action == "BUY" and strategy.opentrades < max_ops
+bool signal_sell = pasa_tqs and pasa_filtros and pasa_stats and final_action == "SELL" and strategy.opentrades < max_ops
+
+// =============================================================================
+// SL / TP CALCULATION (brain.py _sl_tp_por_activo + REGIMEN_CONFIG)
+// =============================================================================
+
+// Base SL/TP por tipo de activo (brain.py lineas 146-158)
+float sl_mult_asset = is_forex ? 1.5 : is_metal ? 2.0 : is_crypto ? 2.0 : (is_indice or is_commodity) ? 1.8 : 1.5
+float tp_mult_asset = is_forex ? 3.0 : is_metal ? 4.0 : is_crypto ? 4.0 : (is_indice or is_commodity) ? 3.6 : 3.0
+
+// Override con REGIMEN_CONFIG si hay trailing activo (regime_detector.py lineas 19-60)
+float sl_mult_regime = regimen == "TRENDING_VOLATILE" ? 2.0 : regimen == "TRENDING_CALM" ? 1.5 : regimen == "RANGING" ? 1.0 : 1.5
+float tp_mult_regime = regimen == "TRENDING_VOLATILE" ? 3.0 : regimen == "TRENDING_CALM" ? 2.5 : regimen == "RANGING" ? 1.2 : 2.0
+
+// Usar el mayor entre asset y regime para SL, y ajustar TP para mantener R:R
+float sl_mult_final = math.max(sl_mult_asset, sl_mult_regime)
+float tp_mult_final = math.max(tp_mult_asset, tp_mult_regime)
+
+// Validar R:R minimo (brain.py lineas 1062-1066)
+float rr_check = sl_mult_final > 0 ? tp_mult_final / sl_mult_final : 0
+if rr_check < rr_minimo
+    tp_mult_final := sl_mult_final * rr_minimo
+
+// Risk % segun confianza Stats sin IA (brain.py lineas 984-990)
+float risk_final = riesgo_pct
+if not use_ia
+    if stats_confidence >= 85
+        risk_final := math.min(riesgo_pct * 1.5, 2.0)  // max 1.5% sin IA (alto conf)
+    else if stats_confidence < 70
+        risk_final := riesgo_pct * 0.5  // bajo conf = reduce riesgo
+
+float sl_distance = atr14 * sl_mult_final
+float tp_distance = atr14 * tp_mult_final
+
+// Precios SL/TP base
 float sl_price = na
 float tp_price = na
 
 if direccion == "BUY"
     sl_price := close - sl_distance
     tp_price := close + tp_distance
-    // Ajustar SL a soporte cercano
+    // Ajustar SL a soporte cercano (brain.py lineas 1086-1094)
     if not na(sr_sup1) and sr_sup1 < close and sr_sup1 > sl_price * 0.998
-        sl_price := sr_sup1 - atr14 * 0.2
+        float candidate = sr_sup1 - atr14 * 0.2
+        if math.abs(candidate - (close - sl_distance)) < atr14 * 0.5
+            sl_price := candidate
     // Ajustar TP a resistencia cercana
     if not na(sr_res1) and sr_res1 > close and sr_res1 > tp_price * 0.95
-        tp_price := sr_res1 - atr14 * 0.1
+        if math.abs(sr_res1 - tp_price) < atr14 * 1.0
+            tp_price := sr_res1 - atr14 * 0.1
 else if direccion == "SELL"
     sl_price := close + sl_distance
     tp_price := close - tp_distance
     // Ajustar SL a resistencia cercana
     if not na(sr_res1) and sr_res1 > close and sr_res1 < sl_price * 1.002
-        sl_price := sr_res1 + atr14 * 0.2
+        float candidate = sr_res1 + atr14 * 0.2
+        if math.abs(candidate - (close + sl_distance)) < atr14 * 0.5
+            sl_price := candidate
     // Ajustar TP a soporte cercano
     if not na(sr_sup1) and sr_sup1 < close and sr_sup1 < tp_price * 1.05
-        tp_price := sr_sup1 + atr14 * 0.1
+        if math.abs(sr_sup1 - tp_price) < atr14 * 1.0
+            tp_price := sr_sup1 + atr14 * 0.1
 
 // R:R final check
-float rr_final = sl_price != 0 ? math.abs(tp_price - close) / math.abs(close - sl_price) : 0
+float rr_final = not na(sl_price) and sl_price != 0 ? math.abs(nz(tp_price) - close) / math.abs(close - sl_price) : 0
 bool rr_ok = rr_final >= rr_minimo
 
-// =============================================================================
-// SEÑALES DE ENTRADA
-// =============================================================================
-bool signal_buy  = pasa_tqs and direccion == "BUY" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
-bool signal_sell = pasa_tqs and direccion == "SELL" and in_session and adx_ok and ema200_ok and rr_ok and strategy.opentrades < max_ops
+// Recheck signal with R:R
+signal_buy  := signal_buy and rr_ok
+signal_sell := signal_sell and rr_ok
 
 // =============================================================================
-// TRAILING STOP LOGIC
+// TRAILING STOP LOGIC (backtest.py simulate_trade lineas 449-515)
 // =============================================================================
 var float trail_sl = na
 var float entry_price = na
@@ -379,7 +620,6 @@ if signal_sell and strategy.position_size == 0
 // Trailing stop updates
 if strategy.position_size > 0 and trailing_type != "none"
     if trailing_type == "breakeven"
-        // Mover SL a entrada cuando el precio alcanza 50% del TP
         if trade_dir == "BUY" and not na(entry_price) and not na(tp_price)
             half_tp = entry_price + (tp_price - entry_price) * 0.5
             if close >= half_tp
@@ -391,7 +631,6 @@ if strategy.position_size > 0 and trailing_type != "none"
                 trail_sl := math.min(nz(trail_sl, 1e10), entry_price)
                 strategy.exit("TP/SL", "SELL", stop=trail_sl, limit=tp_price)
     else if trailing_type == "atr1"
-        // SL sigue al precio a 1 ATR de distancia
         if trade_dir == "BUY"
             new_sl = close - atr14
             trail_sl := math.max(nz(trail_sl), new_sl)
@@ -401,7 +640,6 @@ if strategy.position_size > 0 and trailing_type != "none"
             trail_sl := math.min(nz(trail_sl, 1e10), new_sl)
             strategy.exit("TP/SL", "SELL", stop=trail_sl, limit=tp_price)
     else if trailing_type == "atr2"
-        // SL sigue cada +0.5 ATR agresivo
         if trade_dir == "BUY"
             new_sl = close - atr14 * 0.5
             trail_sl := math.max(nz(trail_sl), new_sl)
@@ -440,10 +678,6 @@ plot(show_sr and not na(sr_sup1) ? sr_sup1 : na, "S1", color=color.new(color.gre
 plotshape(signal_buy, "BUY Signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
 plotshape(signal_sell, "SELL Signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
 
-// EMA 35/50 Cross markers
-plotshape(ema35_cross_up, "Golden Cross 35/50", shape.diamond, location.belowbar, color.new(color.lime, 0), size=size.tiny)
-plotshape(ema35_cross_down, "Death Cross 35/50", shape.diamond, location.abovebar, color.new(color.fuchsia, 0), size=size.tiny)
-
 // Divergence markers
 plotshape(bearish_div and show_engines, "Bearish Div", shape.xcross, location.abovebar, color.new(color.orange, 20), size=size.tiny)
 plotshape(bullish_div and show_engines, "Bullish Div", shape.xcross, location.belowbar, color.new(color.aqua, 20), size=size.tiny)
@@ -464,14 +698,17 @@ bgcolor(reg_color, title="Regimen Background")
 bgcolor(squeeze ? color.new(color.orange, 90) : na, title="Squeeze Active")
 
 // =============================================================================
-// INFO TABLE (Panel de engines)
+// INFO TABLE (Panel de engines + Stats + IA)
 // =============================================================================
 if show_engines and barstate.islast
-    var table panel = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 20), border_width=1)
+    var table panel = table.new(position.top_right, 2, 16, bgcolor=color.new(color.black, 20), border_width=1)
+
+    // TQS
     table.cell(panel, 0, 0, "TQS", text_color=color.white, text_size=size.small)
     tqs_col = tqs >= umbral ? color.green : color.red
-    table.cell(panel, 1, 0, str.tostring(tqs, "#.###"), text_color=tqs_col, text_size=size.small)
+    table.cell(panel, 1, 0, str.tostring(tqs, "#.###") + "/" + str.tostring(umbral, "#.##"), text_color=tqs_col, text_size=size.small)
 
+    // Engines
     table.cell(panel, 0, 1, "Momentum", text_color=color.gray, text_size=size.tiny)
     table.cell(panel, 1, 1, str.tostring(m_score, "#.##") + " " + m_dir, text_color=color.white, text_size=size.tiny)
 
@@ -479,41 +716,58 @@ if show_engines and barstate.islast
     table.cell(panel, 1, 2, str.tostring(r_score, "#.##") + " " + r_dir, text_color=color.white, text_size=size.tiny)
 
     table.cell(panel, 0, 3, "Strength", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 3, str.tostring(s_score, "#.##") + " " + s_dir, text_color=color.white, text_size=size.tiny)
+    str_label = has_cs ? str.tostring(s_score, "#.##") + " " + s_dir : "N/A (no-fx)"
+    table.cell(panel, 1, 3, str_label, text_color=color.white, text_size=size.tiny)
 
     table.cell(panel, 0, 4, "Breakout", text_color=color.gray, text_size=size.tiny)
     table.cell(panel, 1, 4, str.tostring(b_score, "#.##") + " " + b_dir, text_color=color.white, text_size=size.tiny)
 
+    // Regimen
     table.cell(panel, 0, 5, "Regimen", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 5, regimen, text_color=color.yellow, text_size=size.tiny)
+    color reg_text_col = regimen == "TRENDING_VOLATILE" ? color.green : regimen == "TRENDING_CALM" ? color.teal : regimen == "RANGING" ? color.yellow : regimen == "CHOPPY" ? color.red : color.gray
+    table.cell(panel, 1, 5, regimen + (regimen_bloqueado ? " BLOCKED" : ""), text_color=reg_text_col, text_size=size.tiny)
 
+    // Direccion
     table.cell(panel, 0, 6, "Direccion", text_color=color.gray, text_size=size.tiny)
-    color dir_col = color.gray
-    if direccion == "BUY"
-        dir_col := color.green
-    else if direccion == "SELL"
-        dir_col := color.red
+    color dir_col = direccion == "BUY" ? color.green : direccion == "SELL" ? color.red : color.gray
     table.cell(panel, 1, 6, direccion, text_color=dir_col, text_size=size.tiny)
 
-    table.cell(panel, 0, 7, "RSI", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 7, str.tostring(rsi14, "#.#"), text_color=color.white, text_size=size.tiny)
+    // Stats model
+    table.cell(panel, 0, 7, "Stats", text_color=color.gray, text_size=size.tiny)
+    color stats_col = stats_action == "BUY" ? color.green : stats_action == "SELL" ? color.red : color.gray
+    table.cell(panel, 1, 7, stats_action + " " + str.tostring(stats_confidence) + "% (" + str.tostring(votes_buy) + "B/" + str.tostring(votes_sell) + "S)", text_color=stats_col, text_size=size.tiny)
 
-    table.cell(panel, 0, 8, "ADX", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 8, str.tostring(adx_val, "#.#"), text_color=color.white, text_size=size.tiny)
+    // IA mode
+    table.cell(panel, 0, 8, "Modo", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 8, use_ia ? "Stats+IA" : "Solo Stats", text_color=use_ia ? color.aqua : color.yellow, text_size=size.tiny)
 
-    table.cell(panel, 0, 9, "ATR%", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 9, str.tostring(atr_pct, "#.##") + "%", text_color=color.white, text_size=size.tiny)
+    // Final action
+    table.cell(panel, 0, 9, "Final", text_color=color.gray, text_size=size.tiny)
+    color final_col = final_action == "BUY" ? color.green : final_action == "SELL" ? color.red : color.gray
+    table.cell(panel, 1, 9, final_action + " " + str.tostring(final_confidence) + "%", text_color=final_col, text_size=size.tiny)
 
-    table.cell(panel, 0, 10, "Vol Ratio", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 10, str.tostring(vol_ratio, "#.##"), text_color=color.white, text_size=size.tiny)
+    // Asset type
+    table.cell(panel, 0, 10, "Asset", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 10, asset_type, text_color=color.white, text_size=size.tiny)
 
-    table.cell(panel, 0, 11, "Squeeze", text_color=color.gray, text_size=size.tiny)
-    table.cell(panel, 1, 11, squeeze ? "SI" : "NO", text_color=squeeze ? color.orange : color.gray, text_size=size.tiny)
+    // Indicadores clave
+    table.cell(panel, 0, 11, "RSI", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 11, str.tostring(rsi14, "#.#"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 12, "ADX", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 12, str.tostring(adx_val, "#.#"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 13, "ATR%", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 13, str.tostring(atr_pct, "#.##") + "%", text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 14, "Vol Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 14, str.tostring(vol_ratio, "#.##"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 15, "SL/TP mult", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 15, str.tostring(sl_mult_final, "#.#") + "/" + str.tostring(tp_mult_final, "#.#") + " ATR", text_color=color.white, text_size=size.tiny)
 
 // =============================================================================
 // ALERTAS
 // =============================================================================
 alertcondition(signal_buy, "ParraCorp BUY", "ParraCorp: Senal BUY - TQS={{plot_0}}")
 alertcondition(signal_sell, "ParraCorp SELL", "ParraCorp: Senal SELL - TQS={{plot_0}}")
-alertcondition(ema35_cross_up, "Golden Cross 35/50", "EMA35 cruza por encima de EMA50")
-alertcondition(ema35_cross_down, "Death Cross 35/50", "EMA35 cruza por debajo de EMA50")

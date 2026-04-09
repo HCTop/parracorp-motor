@@ -388,15 +388,24 @@ def build_snapshot(df, idx, symbol, tf):
 # REGIMEN DETECTOR (simplificado)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def detect_regimen(adx, vol_ratio):
-    if adx > 25 and vol_ratio > 1.3:
+def detect_regimen(adx, vol_ratio, ema20=0, ema50=0):
+    """Replica regime_detector.py detectar_regimen (produccion)."""
+    t_fuerte = adx > 30
+    t_debil = adx < 20
+    alta_vol = vol_ratio > 1.5
+    baja_vol = vol_ratio < 0.7
+    sin_dir = abs(ema20 - ema50) / ema50 < 0.001 if ema50 else False
+
+    if t_fuerte and alta_vol:
         return "TRENDING_VOLATILE"
-    elif adx > 25:
+    elif t_fuerte and not alta_vol:
         return "TRENDING_CALM"
-    elif adx < 18 and vol_ratio < 0.8:
+    elif t_debil and baja_vol:
         return "RANGING"
-    elif adx < 15 and vol_ratio < 0.7:
+    elif alta_vol and t_debil:
         return "CHOPPY"
+    elif t_debil and sin_dir:
+        return "RANGING"
     return "NORMAL"
 
 
@@ -443,11 +452,78 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SPREADS REALISTAS (ICMarkets / VTMarkets ECN, promedio en pip)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Spread en unidades de precio (no pips). Ajustado por tipo de par.
+def get_spread(symbol):
+    """Retorna spread medio en unidades de precio para el simbolo."""
+    sym = symbol.upper().replace("/", "")
+
+    # Forex majors (spread en pips -> convertir)
+    spreads_pips = {
+        # Majors: 0.1-0.3 pips ECN
+        "EURUSD": 0.2, "GBPUSD": 0.3, "USDJPY": 0.2, "USDCHF": 0.3,
+        "AUDUSD": 0.3, "USDCAD": 0.4, "NZDUSD": 0.4,
+        # Crosses: 0.5-1.5 pips
+        "EURJPY": 0.5, "GBPJPY": 0.8, "EURGBP": 0.3, "AUDJPY": 0.6,
+        "CADJPY": 0.6, "GBPAUD": 1.2, "GBPNZD": 1.5, "GBPCAD": 1.2,
+        "EURNZD": 1.2, "EURAUD": 1.0, "EURCAD": 0.8, "AUDNZD": 1.0,
+        # Metales
+        "XAUUSD": 1.5, "XAGUSD": 2.0,  # en centavos de USD
+        # Indices
+        "NAS100": 1.0, "US30": 1.5, "SPX500": 0.4, "US500": 0.4,
+    }
+
+    pip_spread = spreads_pips.get(sym, None)
+    if pip_spread is not None:
+        # Convertir pips a precio
+        if "JPY" in sym:
+            return pip_spread * 0.01  # 1 pip = 0.01
+        elif "XAU" in sym:
+            return pip_spread * 0.1   # spread de oro: 1.5 pips = $0.15
+        elif "XAG" in sym:
+            return pip_spread * 0.001
+        elif any(x in sym for x in ["US30", "NAS", "SPX", "US500"]):
+            return pip_spread * 1.0   # indices: ya en puntos
+        else:
+            return pip_spread * 0.0001  # forex standard
+
+    # Crypto: spread como % del precio (ICMarkets crypto CFD)
+    crypto_pct = {
+        "BTCUSD": 0.04, "ETHUSD": 0.06, "SOLUSD": 0.10, "AVAXUSD": 0.12,
+        "XRPUSD": 0.10, "BNBUSD": 0.10, "DOGEUSD": 0.15, "ADAUSD": 0.12,
+        "LINKUSD": 0.10, "DOTUSD": 0.12, "MATICUSD": 0.15, "LTCUSD": 0.08,
+    }
+    pct = crypto_pct.get(sym, 0.10)  # default 0.10% para crypto desconocida
+    return 0  # se calcula dinamicamente en simulate_trade
+
+_CRYPTO_SPREAD_PCT = {
+    "BTCUSD": 0.0004, "ETHUSD": 0.0006, "SOLUSD": 0.0010, "AVAXUSD": 0.0012,
+    "XRPUSD": 0.0010, "BNBUSD": 0.0010, "DOGEUSD": 0.0015, "ADAUSD": 0.0012,
+    "LINKUSD": 0.0010, "DOTUSD": 0.0012, "MATICUSD": 0.0015, "LTCUSD": 0.0008,
+}
+
+
+def get_spread_at_price(symbol, price):
+    """Spread en unidades de precio. Para crypto usa % del precio actual."""
+    sym = symbol.upper().replace("/", "")
+    fixed = get_spread(sym)
+    if fixed > 0:
+        return fixed
+    # Crypto: porcentaje del precio
+    pct = _CRYPTO_SPREAD_PCT.get(sym, 0.0010)
+    return price * pct
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SIMULACION DE TRADES
 # ══════════════════════════════════════════════════════════════════════════════
 
-def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr):
-    """Simula un trade barra a barra hasta SL, TP o fin de datos."""
+def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr, be_pct=0.5):
+    """Simula un trade barra a barra hasta SL, TP o fin de datos.
+    be_pct: porcentaje del TP para activar breakeven (0.5 = 50%, 0.4 = 40%)
+    """
     for i in range(entry_idx + 1, len(df)):
         high = df.iloc[i]["high"]
         low = df.iloc[i]["low"]
@@ -470,8 +546,8 @@ def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr):
 
             # Trailing
             if trailing == "breakeven":
-                half_tp = entry_price + (tp - entry_price) * 0.5
-                if close >= half_tp:
+                trigger = entry_price + (tp - entry_price) * be_pct
+                if close >= trigger:
                     sl = max(sl, entry_price)
             elif trailing == "atr1":
                 new_sl = close - cur_atr
@@ -496,8 +572,8 @@ def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr):
 
             # Trailing
             if trailing == "breakeven":
-                half_tp = entry_price - (entry_price - tp) * 0.5
-                if close <= half_tp:
+                trigger = entry_price - (entry_price - tp) * be_pct
+                if close <= trigger:
                     sl = min(sl, entry_price)
             elif trailing == "atr1":
                 new_sl = close + cur_atr
@@ -521,10 +597,12 @@ def simulate_trade(df, entry_idx, action, entry_price, sl, tp, trailing, atr):
 
 def run_backtest(symbol, tf, days, use_ia, capital):
     capital_inicial = capital
+    spread_sample = get_spread_at_price(symbol, 1000)  # se recalcula por trade
     print(f"\n{'='*60}")
     print(f"  PARRACORP BACKTEST")
     print(f"  {symbol} | {tf}m | {days} dias | IA: {'SI' if use_ia else 'NO'}")
     print(f"  Capital: ${capital:,.0f} (compounding activo)")
+    print(f"  Spread: ICMarkets/VTMarkets ECN (realista)")
     print(f"{'='*60}\n")
 
     # 1. Descargar datos
@@ -591,8 +669,8 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         if snapshot is None:
             continue
 
-        # Regimen
-        regimen = detect_regimen(snapshot["adx"], snapshot["vol_ratio"])
+        # Regimen (con EMA20/50 para detectar sin_dir)
+        regimen = detect_regimen(snapshot["adx"], snapshot["vol_ratio"], snapshot.get("ema20", 0), snapshot.get("ema50", 0))
 
         # Motores
         engines = evaluar_senales(features, regimen)
@@ -602,6 +680,9 @@ def run_backtest(symbol, tf, days, use_ia, capital):
             continue
 
         total_tqs_pass += 1
+
+        # Inyectar hora de la vela para que brain.safety_filter use la hora correcta
+        snapshot["_hour_utc"] = hour_utc
 
         # Brain (con o sin IA)
         try:
@@ -627,6 +708,18 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         if sl == 0 or tp == 0:
             continue
 
+        # Aplicar spread: BUY entra al ask (precio + spread/2), SELL al bid (precio - spread/2)
+        spread = get_spread_at_price(symbol, entry)
+        half_spread = spread / 2
+        if action == "BUY":
+            entry += half_spread   # peor entrada para BUY
+            tp += half_spread      # TP tambien se desplaza
+            sl += half_spread      # SL tambien
+        else:
+            entry -= half_spread   # peor entrada para SELL
+            tp -= half_spread
+            sl -= half_spread
+
         exit_idx, exit_price, pnl, status = simulate_trade(df, idx, action, entry, sl, tp, trailing, atr)
 
         # Calcular PnL en USD (simplificado)
@@ -644,6 +737,9 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         capital_before = capital
         capital += pnl_usd
 
+        # Coste spread en USD para este trade
+        spread_cost_usd = (spread / sl_dist * risk_usd) if sl_dist > 0 else 0
+
         trade = {
             "n": len(trades) + 1,
             "entry_time": str(df.index[idx]),
@@ -656,6 +752,7 @@ def run_backtest(symbol, tf, days, use_ia, capital):
             "trailing": trailing,
             "pnl_pips": round(pnl_pips, 1),
             "pnl_usd": round(pnl_usd, 2),
+            "spread_cost": round(spread_cost_usd, 2),
             "status": status,
             "tqs": round(tqs, 3),
             "regimen": regimen,
@@ -674,9 +771,10 @@ def run_backtest(symbol, tf, days, use_ia, capital):
         # Print trade con capital
         color = "\033[92m" if pnl_usd > 0 else "\033[91m"
         reset = "\033[0m"
+        trail_label = f" [{trailing}]" if trailing != "none" else ""
         print(f"  {color}#{trade['n']:3d} {action:4s} {trade['entry_time'][:16]} -> {trade['exit_time'][:16]} "
               f"| {status:14s} | {pnl_pips:+7.1f} pips | {pnl_usd:+8.2f} USD "
-              f"| Capital: ${capital:,.2f} | Riesgo: ${risk_usd:.2f}{reset}")
+              f"| Capital: ${capital:,.2f} | Riesgo: ${risk_usd:.2f}{trail_label}{reset}")
 
     # Reset active_trade for proper counting
     # Recalculate skipped bars
@@ -714,6 +812,7 @@ def run_backtest(symbol, tf, days, use_ia, capital):
     tp_count = len([t for t in trades if t["status"] == "HIT_TP"])
     sl_count = len([t for t in trades if t["status"] == "HIT_SL"])
     trail_count = len([t for t in trades if t["status"] == "TRAILING_CLOSE"])
+    be_count = len([t for t in trades if t["status"] == "TRAILING_CLOSE" and t.get("trailing") == "breakeven"])
 
     print(f"")
     print(f"  Velas analizadas:    {total_velas}")
@@ -724,20 +823,137 @@ def run_backtest(symbol, tf, days, use_ia, capital):
     print(f"  Win Rate:            {wr:.1f}%")
     print(f"  Profit Factor:       {pf:.2f}")
     print(f"")
+    total_spread = sum(t.get("spread_cost", 0) for t in trades)
     print(f"  PnL Total:           {total_pnl:+.2f} USD ({total_pips:+.1f} pips)")
+    print(f"  Spread total:        -{total_spread:.2f} USD (incluido en PnL)")
     print(f"  Avg Win:             {avg_win:+.2f} USD")
     print(f"  Avg Loss:            {avg_loss:+.2f} USD")
     print(f"  Max Drawdown:        {max_dd:.2f} USD")
     print(f"")
+    trailing_counts = {}
+    for t in trades:
+        tr = t.get("trailing", "none")
+        trailing_counts[tr] = trailing_counts.get(tr, 0) + 1
+
     print(f"  Por tipo de cierre:")
     print(f"    TP:                {tp_count}")
     print(f"    SL:                {sl_count}")
     print(f"    Trailing:          {trail_count}")
+    print(f"  Trailing usado:")
+    for tr_type, tr_cnt in sorted(trailing_counts.items()):
+        print(f"    {tr_type:18s} {tr_cnt} trades")
     print(f"")
     print(f"  Capital inicial:     ${capital_inicial:,.2f}")
     print(f"  Capital final:       ${capital:,.2f}")
     print(f"  Rentabilidad:        {((capital - capital_inicial) / capital_inicial) * 100:+.2f}%")
     print(f"")
+
+    # ══════════════════════════════════════════════════════════════════
+    # DESGLOSE POR DIA DE LA SEMANA
+    # ══════════════════════════════════════════════════════════════════
+    print(f"  {'='*60}")
+    print(f"  RENDIMIENTO POR DIA DE LA SEMANA")
+    print(f"  {'='*60}")
+    day_names = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
+    day_stats = {}
+    for t in trades:
+        try:
+            dt = pd.Timestamp(t["entry_time"])
+            day = dt.dayofweek  # 0=Lun, 6=Dom
+        except Exception:
+            continue
+        if day not in day_stats:
+            day_stats[day] = {"trades": 0, "wins": 0, "pnl": 0.0, "pips": 0.0}
+        day_stats[day]["trades"] += 1
+        if t["pnl_usd"] > 0:
+            day_stats[day]["wins"] += 1
+        day_stats[day]["pnl"] += t["pnl_usd"]
+        day_stats[day]["pips"] += t["pnl_pips"]
+
+    print(f"  {'Dia':5} {'Trades':>7} {'Wins':>6} {'WR%':>7} {'PnL USD':>10} {'PnL Pips':>10} {'Avg USD':>9}")
+    print(f"  {'-'*60}")
+    for d in sorted(day_stats.keys()):
+        s = day_stats[d]
+        wr_d = s["wins"] / s["trades"] * 100 if s["trades"] > 0 else 0
+        avg_d = s["pnl"] / s["trades"] if s["trades"] > 0 else 0
+        color = "\033[92m" if s["pnl"] > 0 else "\033[91m"
+        reset = "\033[0m"
+        print(f"  {color}{day_names[d]:5} {s['trades']:7d} {s['wins']:6d} {wr_d:6.1f}% {s['pnl']:+10.2f} {s['pips']:+10.1f} {avg_d:+9.2f}{reset}")
+
+    # Mejor y peor dia
+    if day_stats:
+        best_day = max(day_stats.items(), key=lambda x: x[1]["pnl"])
+        worst_day = min(day_stats.items(), key=lambda x: x[1]["pnl"])
+        print(f"\n  \033[92m★ Mejor dia:  {day_names[best_day[0]]} ({best_day[1]['pnl']:+.2f} USD, WR {best_day[1]['wins']/best_day[1]['trades']*100:.0f}%)\033[0m")
+        print(f"  \033[91m✗ Peor dia:   {day_names[worst_day[0]]} ({worst_day[1]['pnl']:+.2f} USD, WR {worst_day[1]['wins']/worst_day[1]['trades']*100:.0f}%)\033[0m")
+    print()
+
+    # ══════════════════════════════════════════════════════════════════
+    # DESGLOSE POR HORA DE ENTRADA (UTC)
+    # ══════════════════════════════════════════════════════════════════
+    print(f"  {'='*60}")
+    print(f"  RENDIMIENTO POR HORA (UTC)")
+    print(f"  {'='*60}")
+    hour_stats = {}
+    for t in trades:
+        try:
+            dt = pd.Timestamp(t["entry_time"])
+            h = dt.hour
+        except Exception:
+            continue
+        if h not in hour_stats:
+            hour_stats[h] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        hour_stats[h]["trades"] += 1
+        if t["pnl_usd"] > 0:
+            hour_stats[h]["wins"] += 1
+        hour_stats[h]["pnl"] += t["pnl_usd"]
+
+    print(f"  {'Hora':>6} {'Trades':>7} {'Wins':>6} {'WR%':>7} {'PnL USD':>10} {'Avg USD':>9}  {'':1}")
+    print(f"  {'-'*55}")
+    for h in sorted(hour_stats.keys()):
+        s = hour_stats[h]
+        wr_h = s["wins"] / s["trades"] * 100 if s["trades"] > 0 else 0
+        avg_h = s["pnl"] / s["trades"] if s["trades"] > 0 else 0
+        bar_len = int(abs(s["pnl"]) / max(abs(s["pnl"]) for s in hour_stats.values()) * 15) if hour_stats else 0
+        bar = ("█" * bar_len) if s["pnl"] > 0 else ("░" * bar_len)
+        color = "\033[92m" if s["pnl"] > 0 else "\033[91m"
+        reset = "\033[0m"
+        print(f"  {color}{h:02d}:00 {s['trades']:7d} {s['wins']:6d} {wr_h:6.1f}% {s['pnl']:+10.2f} {avg_h:+9.2f}  {bar}{reset}")
+
+    # Mejor y peor hora
+    if hour_stats:
+        best_hour = max(hour_stats.items(), key=lambda x: x[1]["pnl"])
+        worst_hour = min(hour_stats.items(), key=lambda x: x[1]["pnl"])
+        print(f"\n  \033[92m★ Mejor hora: {best_hour[0]:02d}:00 UTC ({best_hour[1]['pnl']:+.2f} USD, {best_hour[1]['trades']} trades)\033[0m")
+        print(f"  \033[91m✗ Peor hora:  {worst_hour[0]:02d}:00 UTC ({worst_hour[1]['pnl']:+.2f} USD, {worst_hour[1]['trades']} trades)\033[0m")
+    print()
+
+    # ══════════════════════════════════════════════════════════════════
+    # DESGLOSE POR REGIMEN
+    # ══════════════════════════════════════════════════════════════════
+    print(f"  {'='*60}")
+    print(f"  RENDIMIENTO POR REGIMEN")
+    print(f"  {'='*60}")
+    reg_stats = {}
+    for t in trades:
+        reg = t.get("regimen", "NORMAL")
+        if reg not in reg_stats:
+            reg_stats[reg] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        reg_stats[reg]["trades"] += 1
+        if t["pnl_usd"] > 0:
+            reg_stats[reg]["wins"] += 1
+        reg_stats[reg]["pnl"] += t["pnl_usd"]
+
+    print(f"  {'Regimen':20} {'Trades':>7} {'Wins':>6} {'WR%':>7} {'PnL USD':>10} {'Avg USD':>9}")
+    print(f"  {'-'*60}")
+    for reg in sorted(reg_stats.keys(), key=lambda x: reg_stats[x]["pnl"], reverse=True):
+        s = reg_stats[reg]
+        wr_r = s["wins"] / s["trades"] * 100 if s["trades"] > 0 else 0
+        avg_r = s["pnl"] / s["trades"] if s["trades"] > 0 else 0
+        color = "\033[92m" if s["pnl"] > 0 else "\033[91m"
+        reset = "\033[0m"
+        print(f"  {color}{reg:20} {s['trades']:7d} {s['wins']:6d} {wr_r:6.1f}% {s['pnl']:+10.2f} {avg_r:+9.2f}{reset}")
+    print()
 
     # Trades detallados
     print(f"  {'='*60}")
