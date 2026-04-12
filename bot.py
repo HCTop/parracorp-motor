@@ -780,15 +780,23 @@ def estado():
 
 
 def _tech_summary(snapshot):
-    """Calcula resumen tecnico estilo Investing.com: buy/sell/neutral por MAs e indicadores."""
+    """
+    Calcula resumen tecnico estilo Investing.com.
+    Criterios alineados con la metodologia real de Investing.com.
+
+    Moving Averages: precio vs MA -> Buy si precio > MA, Sell si precio < MA
+    Indicators: cada indicador tiene su regla especifica
+    """
     precio = snapshot.get("precio", 0)
     if not precio:
-        return {"ma": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral"},
-                "indicators": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral"},
-                "summary": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral", "score": 0}}
+        empty = {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral", "score": 0}
+        return {"ma": dict(empty), "indicators": dict(empty), "summary": dict(empty)}
 
-    # --- Moving Averages ---
+    # === MOVING AVERAGES ===
+    # Investing.com compara precio vs cada MA: precio > MA = Buy, precio < MA = Sell
     ma_buy, ma_sell, ma_neutral = 0, 0, 0
+
+    # EMAs (9, 20, 35, 50, 200)
     for ema_key in ("ema9", "ema20", "ema35", "ema50", "ema200"):
         val = snapshot.get(ema_key, 0)
         if val > 0:
@@ -798,7 +806,8 @@ def _tech_summary(snapshot):
                 ma_sell += 1
             else:
                 ma_neutral += 1
-    # SMA20 (bb_mid ~ sma20)
+
+    # SMA20 (usamos bb_mid como proxy de SMA20)
     sma20 = snapshot.get("sma20", 0) or snapshot.get("bb_mid", 0)
     if sma20 > 0:
         if precio > sma20:
@@ -807,12 +816,25 @@ def _tech_summary(snapshot):
             ma_sell += 1
         else:
             ma_neutral += 1
-    # Supertrend como MA
+
+    # Ichimoku (tenkan vs kijun: tenkan > kijun = Buy)
+    tenkan = snapshot.get("ichi_tenkan", 0)
+    kijun = snapshot.get("ichi_kijun", 0)
+    if tenkan > 0 and kijun > 0:
+        if tenkan > kijun:
+            ma_buy += 1
+        elif tenkan < kijun:
+            ma_sell += 1
+        else:
+            ma_neutral += 1
+
+    # Supertrend
     st = snapshot.get("supertrend", "")
     if st == "up":
         ma_buy += 1
     elif st == "down":
         ma_sell += 1
+
     # VWAP
     vwap = snapshot.get("vwap_proxy", 0)
     if vwap > 0:
@@ -823,30 +845,44 @@ def _tech_summary(snapshot):
         else:
             ma_neutral += 1
 
-    # --- Technical Indicators ---
+    # === TECHNICAL INDICATORS ===
     ind_buy, ind_sell, ind_neutral = 0, 0, 0
-    # RSI
+
+    # 1. RSI(14): > 70 = Sell (sobrecompra), < 30 = Buy (sobreventa),
+    #    entre 30-70: > 50 = Buy, < 50 = Sell
     rsi = snapshot.get("rsi", 50)
-    if rsi > 60:
+    if rsi > 70:
+        ind_sell += 1
+    elif rsi < 30:
         ind_buy += 1
-    elif rsi < 40:
+    elif rsi > 50:
+        ind_buy += 1
+    elif rsi < 50:
         ind_sell += 1
     else:
         ind_neutral += 1
-    # Stochastic
+
+    # 2. Stochastic(9,6): cruce K vs D
+    #    K > D = Buy, K < D = Sell (no usar extremos como señal directa)
     stoch_k = snapshot.get("stoch_k", 50)
     stoch_d = snapshot.get("stoch_d", 50)
-    if stoch_k > 80:
-        ind_sell += 1
-    elif stoch_k < 20:
-        ind_buy += 1  # oversold bounce
-    elif stoch_k > stoch_d:
+    if stoch_k > stoch_d:
         ind_buy += 1
     elif stoch_k < stoch_d:
         ind_sell += 1
     else:
         ind_neutral += 1
-    # MACD
+
+    # 3. StochRSI: sobrecompra/sobreventa puro
+    #    Usamos stoch_k como proxy: > 80 = Sell, < 20 = Buy
+    if stoch_k > 80:
+        ind_sell += 1
+    elif stoch_k < 20:
+        ind_buy += 1
+    else:
+        ind_neutral += 1
+
+    # 4. MACD(12,26): histograma > 0 = Buy, < 0 = Sell
     macd = snapshot.get("macd_hist", 0)
     if macd > 0:
         ind_buy += 1
@@ -854,7 +890,9 @@ def _tech_summary(snapshot):
         ind_sell += 1
     else:
         ind_neutral += 1
-    # ADX + DI
+
+    # 5. ADX(14) + DI: ADX > 20 con DI+ > DI- = Buy, DI- > DI+ = Sell
+    #    ADX < 20 = Neutral (sin tendencia)
     adx = snapshot.get("adx", 0)
     di_plus = snapshot.get("di_plus", 0)
     di_minus = snapshot.get("di_minus", 0)
@@ -865,30 +903,61 @@ def _tech_summary(snapshot):
             ind_sell += 1
     else:
         ind_neutral += 1
-    # CCI
-    cci = snapshot.get("cci", 0)
-    if cci > 100:
-        ind_buy += 1
-    elif cci < -100:
-        ind_sell += 1
-    else:
-        ind_neutral += 1
-    # Williams %R
+
+    # 6. Williams %R(14): > -20 = Sell (sobrecompra), < -80 = Buy (sobreventa)
+    #    Entre -80 y -20: > -50 = Buy, < -50 = Sell
     wr = snapshot.get("williams_r", -50)
     if wr > -20:
         ind_sell += 1
     elif wr < -80:
         ind_buy += 1
+    elif wr > -50:
+        ind_buy += 1
+    elif wr < -50:
+        ind_sell += 1
     else:
         ind_neutral += 1
-    # Bollinger position
-    bb_upper = snapshot.get("bb_upper", 0)
-    bb_lower = snapshot.get("bb_lower", 0)
-    if bb_upper > 0 and bb_lower > 0:
-        bb_mid = (bb_upper + bb_lower) / 2
-        if precio > bb_mid:
+
+    # 7. CCI(14): > 100 = Sell (sobrecompra), < -100 = Buy (sobreventa)
+    #    Entre: > 0 = Buy, < 0 = Sell
+    cci = snapshot.get("cci", 0)
+    if cci > 100:
+        ind_sell += 1
+    elif cci < -100:
+        ind_buy += 1
+    elif cci > 0:
+        ind_buy += 1
+    elif cci < 0:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+
+    # 8. Momentum(10): > 0 = Buy, < 0 = Sell
+    mom = snapshot.get("momentum", 0) or snapshot.get("mom", 0)
+    if mom > 0:
+        ind_buy += 1
+    elif mom < 0:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+
+    # 9. Awesome Oscillator: > 0 = Buy, < 0 = Sell
+    ao = snapshot.get("ao", 0)
+    if ao > 0:
+        ind_buy += 1
+    elif ao < 0:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+
+    # 10. Bull/Bear Power: usamos precio vs ema20 como proxy
+    #     (precio - ema) > 0 = Bull power (buy), < 0 = Bear power (sell)
+    ema20_val = snapshot.get("ema20", 0)
+    if ema20_val > 0 and precio > 0:
+        bp = precio - ema20_val
+        if bp > 0:
             ind_buy += 1
-        elif precio < bb_mid:
+        elif bp < 0:
             ind_sell += 1
         else:
             ind_neutral += 1
@@ -913,7 +982,7 @@ def _tech_summary(snapshot):
         total = b + s + n
         if total == 0:
             return 0.0
-        return round((b - s) / total, 2)  # -1.0 (strong sell) to +1.0 (strong buy)
+        return round((b - s) / total, 2)
 
     tb = ma_buy + ind_buy
     ts = ma_sell + ind_sell
