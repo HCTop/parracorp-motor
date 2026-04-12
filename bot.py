@@ -629,7 +629,7 @@ def _alert_checker():
 
 _SCAN_INTERVAL = 300  # Escaneo completo cada 5 minutos
 _SCAN_TIMEFRAMES = ["15", "60", "240"]  # Multi-timeframe: 15m, 1H, 4H
-_DISPLAY_TIMEFRAMES = ["1", "5", "15", "30", "60", "240", "1D", "1M"]  # Para gauges multi-TF
+_DISPLAY_TIMEFRAMES = ["15", "30", "60", "240", "1D"]  # Para gauges multi-TF
 _last_full_scan = 0
 _last_daily_reset_date = None
 
@@ -729,10 +729,14 @@ def motor_principal():
             except Exception:
                 pass
 
-            # Añadir TFs de display para gauges multi-TF
+            # TFs de display: solo añadir los que faltan y son ligeros
+            # 1m y 5m no se suscriben (demasiado ruido, coste alto)
+            # 30m, 1D, 1M se calculan desde barras existentes en _tech_mtf
+            # Solo suscribimos los que no tenemos: 30, 1D
+            _EXTRA_DISPLAY_TFS = ["30", "1D"]
             syms_in_pairs = set(p[0] for p in pairs)
             for sym_d in syms_in_pairs:
-                for dtf in _DISPLAY_TIMEFRAMES:
+                for dtf in _EXTRA_DISPLAY_TFS:
                     pairs.add((sym_d, dtf))
 
             if pairs != current_pairs:
@@ -928,8 +932,8 @@ def _tech_summary(snapshot):
 def _tech_mtf(sym):
     """Resumen tecnico por cada timeframe disponible."""
     tf_labels = [
-        ("1", "1 Min"), ("5", "5 Min"), ("15", "15 Min"), ("30", "30 Min"),
-        ("60", "1 Hora"), ("240", "4 Horas"), ("1D", "Diario"), ("1M", "Mensual"),
+        ("15", "15 Min"), ("30", "30 Min"),
+        ("60", "1 Hora"), ("240", "4 Horas"), ("1D", "Diario"),
     ]
     result = {}
     with _cache_lock:
