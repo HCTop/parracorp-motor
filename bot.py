@@ -629,6 +629,7 @@ def _alert_checker():
 
 _SCAN_INTERVAL = 300  # Escaneo completo cada 5 minutos
 _SCAN_TIMEFRAMES = ["15", "60", "240"]  # Multi-timeframe: 15m, 1H, 4H
+_DISPLAY_TIMEFRAMES = ["1", "5", "15", "30", "60", "240", "1D", "1M"]  # Para gauges multi-TF
 _last_full_scan = 0
 _last_daily_reset_date = None
 
@@ -727,6 +728,12 @@ def motor_principal():
                         pairs.add((sym, "60"))
             except Exception:
                 pass
+
+            # Añadir TFs de display para gauges multi-TF
+            syms_in_pairs = set(p[0] for p in pairs)
+            for sym_d in syms_in_pairs:
+                for dtf in _DISPLAY_TIMEFRAMES:
+                    pairs.add((sym_d, dtf))
 
             if pairs != current_pairs:
                 mlog("MOTOR", f"Suscribiendo {len(pairs)} pares")
@@ -919,13 +926,16 @@ def _tech_summary(snapshot):
 
 
 def _tech_mtf(sym):
-    """Resumen tecnico por cada timeframe cacheado."""
-    tf_labels = {"15": "15 Min", "60": "1 Hora", "240": "4 Horas"}
+    """Resumen tecnico por cada timeframe disponible."""
+    tf_labels = [
+        ("1", "1 Min"), ("5", "5 Min"), ("15", "15 Min"), ("30", "30 Min"),
+        ("60", "1 Hora"), ("240", "4 Horas"), ("1D", "Diario"), ("1M", "Mensual"),
+    ]
     result = {}
     with _cache_lock:
-        for tf_key, tf_name in tf_labels.items():
+        for tf_key, tf_name in tf_labels:
             snap = _snapshot_cache.get((sym, tf_key))
-            if snap:
+            if snap and snap.get("precio", 0) > 0:
                 s = _tech_summary(snap)
                 result[tf_key] = {"name": tf_name, "label": s["summary"]["label"], "score": s["summary"]["score"]}
             else:
