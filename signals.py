@@ -202,6 +202,66 @@ def check_prices(symbol, current_price):
                             sig["sl"] = round(new_sl, 6)
                             sl = sig["sl"]
 
+            # === Alerta Partial Close (50% TP) ===
+            # Notificar al usuario cuando el precio alcanza el 50% del TP
+            # para que pueda mover SL a breakeven manualmente
+            if not sig.get("_notified_50pct", False):
+                tp_dist = abs(tp - entry)
+                if action == "BUY":
+                    progress = (current_price - entry) / tp_dist if tp_dist > 0 else 0
+                else:
+                    progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
+                if progress >= 0.5:
+                    sig["_notified_50pct"] = True
+                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 50% TP ({progress*100:.0f}%) - Mover SL a BE")
+                    try:
+                        from push import send as _push_send
+                        token = state.get("push_token", "")
+                        if token:
+                            _push_send(token,
+                                f"50% TP {symbol} {action}",
+                                f"Precio en {current_price:.5f} ({progress*100:.0f}% del TP). Mover SL a breakeven ({entry:.5f})",
+                                signal_type="alert")
+                    except Exception:
+                        pass
+                    try:
+                        from telegram_bot import send_message as _tg_msg
+                        _tg_msg(f"⚠️ *50% TP alcanzado* {symbol} {action}\n"
+                                f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                                f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                                f"👉 Mover SL a breakeven ({entry:.5f})")
+                    except Exception:
+                        pass
+
+            # === Alerta 70% TP (trailing tight) ===
+            if not sig.get("_notified_70pct", False) and sig.get("_notified_50pct", False):
+                tp_dist = abs(tp - entry)
+                if action == "BUY":
+                    progress = (current_price - entry) / tp_dist if tp_dist > 0 else 0
+                else:
+                    progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
+                if progress >= 0.7:
+                    sig["_notified_70pct"] = True
+                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 70% TP - Considerar cerrar parcial")
+                    try:
+                        from push import send as _push_send
+                        token = state.get("push_token", "")
+                        if token:
+                            _push_send(token,
+                                f"70% TP {symbol} {action}",
+                                f"Precio en {current_price:.5f} ({progress*100:.0f}% del TP). Considerar trailing tight o cerrar parcial.",
+                                signal_type="alert")
+                    except Exception:
+                        pass
+                    try:
+                        from telegram_bot import send_message as _tg_msg
+                        _tg_msg(f"🔥 *70% TP alcanzado* {symbol} {action}\n"
+                                f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                                f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                                f"👉 Trailing tight o cerrar parcial")
+                    except Exception:
+                        pass
+
             hit = None
             if action == "BUY":
                 if current_price <= sl:
@@ -253,6 +313,13 @@ def check_prices(symbol, current_price):
                 triggered.append(sig)
 
                 mlog("SIGNAL", f"{sig['id']} {hit} {symbol} PnL={pnl_pct:+.2f}% ${sig['pnl_usd']:+.2f}")
+
+                # Set cooldown per-symbol para evitar re-entrada inmediata
+                try:
+                    import bot as _bot_module
+                    _bot_module._symbol_cooldown[symbol] = time.time() + _bot_module._COOLDOWN_SECONDS
+                except Exception:
+                    pass
 
                 # Log estructurado del trade cerrado
                 duration_s = sig["exit_ts"] - sig.get("timestamp", sig["exit_ts"])

@@ -21,6 +21,47 @@ from concurrent.futures import ThreadPoolExecutor
 from config import GROQ_KEYS, GEMINI_KEYS, CRYPTO, state, lock, log, data_path, tipo_activo
 from portfolio_risk import check_correlacion
 
+# --- Log de decisiones IA (descargable) ---
+IA_DECISIONS_LOG = data_path("ia_decisions.jsonl")
+
+
+def _log_ia_decision(symbol, groq_result, gemini_result, consensus, prompt_summary, stats_context=None):
+    """Registra cada decision de IA en ia_decisions.jsonl para auditoria."""
+    try:
+        record = {
+            "ts": int(time.time()),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+            "symbol": symbol,
+            "prompt_summary": prompt_summary,
+            "groq": {
+                "action": groq_result.get("action", "FAIL") if groq_result else "FAIL",
+                "confidence": groq_result.get("confidence", 0) if groq_result else 0,
+                "analysis": groq_result.get("analysis", groq_result.get("reason", "")) if groq_result else "API fail",
+                "sl_atr": groq_result.get("sl_atr", 0) if groq_result else 0,
+                "tp_atr": groq_result.get("tp_atr", 0) if groq_result else 0,
+            },
+            "gemini": {
+                "action": gemini_result.get("action", "FAIL") if gemini_result else "FAIL",
+                "confidence": gemini_result.get("confidence", 0) if gemini_result else 0,
+                "reason": gemini_result.get("reason", "") if gemini_result else "API fail",
+                "sl_atr": gemini_result.get("sl_atr", 0) if gemini_result else 0,
+                "tp_atr": gemini_result.get("tp_atr", 0) if gemini_result else 0,
+            },
+            "consensus": {
+                "action": consensus.get("action", "WAIT"),
+                "confidence": consensus.get("confidence", 0),
+                "consensus_str": consensus.get("consensus", ""),
+            },
+            "stats_ref": {
+                "action": stats_context.get("action", "?") if stats_context else "N/A",
+                "confidence": stats_context.get("confidence", 0) if stats_context else 0,
+            },
+        }
+        with open(IA_DECISIONS_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log("IA_LOG", f"Error escribiendo decision: {e}")
+
 # --- Rotacion de keys ---
 _groq_idx = 0
 _gemini_idx = 0
@@ -143,19 +184,63 @@ def safety_filter(snapshot, context, symbol):
     return True, "OK"
 
 
-def _sl_tp_por_activo(symbol):
-    """SL/TP en multiplos de ATR segun tipo de activo."""
-    t = tipo_activo(symbol)
-    if t == "forex":
-        return 1.5, 3.0
-    elif t == "metal":
-        return 2.0, 4.0   # Oro/plata: test TP 4.0
-    elif t == "crypto":
-        return 2.0, 4.0   # Crypto: test TP 4.0
-    elif t in ("indice", "commodity"):
-        return 1.8, 3.6   # Indices/commodities: intermedio
+def _sl_tp_por_activo(symbol, vol_ratio=1.0):
+    """
+    SL/TP en multiplos de ATR, optimizado por par + adaptativo a volatilidad.
+
+    vol_ratio: ATR_actual / ATR_media_20. Si > 1.3 = alta vol, ensanchar SL.
+    Si < 0.7 = baja vol, apretar SL y TP.
+    """
+    # Override via env (para optimizacion en backtest)
+    sl_ov = os.environ.get("BT_SL_ATR")
+    tp_ov = os.environ.get("BT_TP_ATR")
+    if sl_ov and tp_ov:
+        return float(sl_ov), float(tp_ov)
+
+    sym = symbol.upper().replace("/", "")
+
+    # Base optimizada por par (backtest alineado 360d, abril 2026)
+    _OPTIMAL = {
+        # Metales (prioridad alta)
+        "XAUUSD": (2.2, 4.5),   # PF 1.67, WR 51.5%, +52.8%
+        "XAGUSD": (1.8, 4.5),   # PF 1.52, WR 48.8%, +52.6%
+        # Crypto (prioridad alta)
+        "BTCUSD": (2.0, 3.5),   # PF 1.50, WR 54.5%, +35.1%
+        "SOLUSD": (1.8, 4.0),   # PF 1.61, WR 48.9%, +66.0%
+        "ETHUSD": (1.8, 4.0),   # PF 1.72, WR 49.0%, +104.6%
+        # Forex
+        "GBPJPY": (1.5, 3.0),   # PF 1.74, WR 56.9%, +24.0%
+        "EURUSD": (1.5, 2.0),   # PF 1.29, WR 53.4%, +15.7%
+        "GBPUSD": (1.5, 2.5),
+        "USDJPY": (1.5, 2.5),
+    }
+
+    if sym in _OPTIMAL:
+        sl_base, tp_base = _OPTIMAL[sym]
     else:
-        return 1.5, 3.0   # Stocks: como forex
+        t = tipo_activo(symbol)
+        if t == "forex":
+            sl_base, tp_base = 1.5, 2.5
+        elif t == "metal":
+            sl_base, tp_base = 1.8, 3.5
+        elif t == "crypto":
+            sl_base, tp_base = 2.0, 3.5
+        elif t in ("indice", "commodity"):
+            sl_base, tp_base = 1.8, 3.0
+        else:
+            sl_base, tp_base = 1.5, 2.5
+
+    # Adaptacion por volatilidad actual
+    if vol_ratio > 1.3:
+        # Alta volatilidad: ensanchar SL para no ser barrido, mantener TP
+        sl_base *= 1.15
+        tp_base *= 1.05
+    elif vol_ratio < 0.7:
+        # Baja volatilidad: apretar ambos (movimientos pequenos)
+        sl_base *= 0.85
+        tp_base *= 0.85
+
+    return round(sl_base, 2), round(tp_base, 2)
 
 
 # === MODELO 1: ESTADISTICO LOCAL (sin IA, siempre gratis) ===================
@@ -553,39 +638,59 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
 
 def modelo_groq(symbol, snapshot, engines_result, context, htf_trend="N/A", sr_info=None):
     """
-    Llamada a Groq con prompt interpretado v4.
+    Groq v5 - IA como decisor principal.
+    Recibe datos del mercado y decide BUY/SELL/WAIT de forma independiente.
     """
     precio = snapshot.get("precio", 0)
     atr = snapshot.get("atr", 0)
     tf = snapshot.get("temporalidad", "60")
     session = context.get("session", {})
-    tqs = engines_result.get("trade_quality_score", 0)
     regimen = engines_result.get("regimen", "NORMAL")
 
     interpretation = _interpret_context(symbol, snapshot, engines_result, context, htf_trend, sr_info)
 
-    prompt = f"""Eres un trader profesional. Los motores cuantitativos ya aprobaron esta señal (TQS={tqs:.0%}).
-Tu rol es CONFIRMAR o RECHAZAR la operacion basandote en el contexto del mercado.
-IMPORTANTE: Si la tendencia es clara y los motores la confirman, OPERA. No rechaces por RSI extremo en tendencia.
+    # Stats como contexto informativo (no como decision)
+    stats_result = engines_result.get("_stats_context", {})
+    stats_text = ""
+    if stats_result:
+        stats_text = (f"\n=== MODELO ESTADISTICO (referencia) ===\n"
+                      f"Sugiere: {stats_result.get('action', '?')} ({stats_result.get('confidence', 0)}%)\n"
+                      f"Razon: {stats_result.get('reason', 'N/A')}\n"
+                      f"NOTA: Es solo una referencia. Tu decides independientemente.")
 
-{symbol} | TF={tf}min | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
-Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {session.get('quality',0)}/5)
+    prompt = f"""Eres un trader profesional analizando {symbol} en timeframe 1H.
+Analiza los datos y decide si hay una oportunidad clara de trading.
 
-=== ANALISIS DEL MERCADO ===
+{symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
+Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
+
+=== DATOS DEL MERCADO ===
 {interpretation}
 
-=== HISTORIAL RECIENTE (ultimas 8 velas) ===
+=== ULTIMAS 8 VELAS ===
 {snapshot.get('hist_chart', 'No disponible')}
+{stats_text}
 
-=== REGLAS ===
-- RSI extremo (>80 o <20) en RANGO: precaucion. En TENDENCIA: operar a favor
-- ADX>25: tendencia fuerte, operar a favor. ADX<15: evitar
-- Si los motores y el precio confirman la direccion: operar con confianza alta
-- SL: 1.0-2.0 ATR | TP: 2.0-4.0 ATR (R:R minimo 2:1)
-- Trailing: "none" normal, "breakeven" si momentum medio, "atr1" si ADX>30
-- WAIT solo si hay contradiccion CLARA entre indicadores o riesgo evidente
+=== COMO DECIDIR ===
+OPERA (BUY/SELL) solo si hay confluencia clara:
+- Tendencia definida (EMAs alineadas + ADX>20)
+- Momentum confirmando la direccion (MACD + RSI coherentes)
+- Estructura favorable (no contra S/R fuerte, no en zona de congestion)
+- Volumen apoyando (vol_ratio > 0.8)
 
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","analysis":"1 frase con la razon"}}
+WAIT si:
+- Indicadores contradictorios (tendencia vs momentum)
+- ADX < 15 (sin fuerza, mercado muerto)
+- Precio atrapado entre S/R sin direccion
+- Divergencia contra la direccion propuesta
+- Cualquier duda razonable
+
+Prefiere NO operar a operar mal. Una operacion evitada no pierde dinero.
+
+SL: entre 1.0 y 3.0 ATR | TP: entre 2.0 y 5.0 ATR | R:R minimo 1.5:1
+Trailing: "none", "breakeven" (si momentum medio), "atr1" (si ADX>30)
+
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     result = _call_groq(prompt, max_tokens=300)
@@ -708,13 +813,12 @@ def _call_gemini(prompt, max_tokens=400):
 
 def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, htf_trend="N/A", sr_info=None):
     """
-    Analisis independiente con Gemini v4 (prompt interpretado).
+    Gemini v5 - IA como decisor principal (independiente de Groq).
+    Analiza datos del mercado y decide BUY/SELL/WAIT.
     """
     precio = snapshot.get("precio", 0)
     atr = snapshot.get("atr", 0)
-    tf = snapshot.get("temporalidad", "60")
     session = context.get("session", {})
-    tqs = engines_result.get("trade_quality_score", 0)
     regimen = engines_result.get("regimen", "NORMAL")
     news = context.get("news", {})
     headlines = news.get("headlines", [])[:3]
@@ -722,31 +826,52 @@ def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, h
 
     interpretation = _interpret_context(symbol, snapshot, engines_result, context, htf_trend, sr_info)
 
+    # Stats como contexto informativo
+    stats_result = engines_result.get("_stats_context", {})
+    stats_text = ""
+    if stats_result:
+        stats_text = (f"\n=== MODELO ESTADISTICO (referencia) ===\n"
+                      f"Sugiere: {stats_result.get('action', '?')} ({stats_result.get('confidence', 0)}%)\n"
+                      f"Razon: {stats_result.get('reason', 'N/A')}\n"
+                      f"NOTA: Es solo una referencia. Tu decides independientemente.")
+
     prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
 
-Los motores cuantitativos ya aprobaron esta señal (TQS={tqs:.0%}). Tu rol es CONFIRMAR o RECHAZAR.
-IMPORTANTE: Si la tendencia es clara y el momentum lo confirma, OPERA. RSI extremo en tendencia NO es razon para rechazar.
+Eres un trader profesional analizando {symbol} en timeframe 1H.
+Analiza los datos y decide si hay una oportunidad clara de trading.
 
-{symbol} | TF={tf}min | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
-Regimen: {regimen} | TQS: {tqs:.0%} | Sesion: {session.get('name','?')} (cal {session.get('quality',0)}/5)
+{symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
+Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
 
-=== ANALISIS DEL MERCADO ===
+=== DATOS DEL MERCADO ===
 {interpretation}
 
-=== HISTORIAL RECIENTE (ultimas 8 velas) ===
+=== ULTIMAS 8 VELAS ===
 {snapshot.get('hist_chart', 'No disponible')}
 
 === NOTICIAS ===
 {news_text}
 Sentimiento: {news.get('sentiment','neutral')}
+{stats_text}
 
-=== REGLAS ===
-- RSI extremo en RANGO: precaucion. En TENDENCIA: operar a favor de la tendencia
-- ADX>25: tendencia fuerte, confirma la operacion. ADX<15: evitar
-- Noticias fuertes contra la direccion: WAIT
-- SL: 1.0-2.0 ATR | TP: 2.0-4.0 ATR (R:R minimo 2:1)
-- Trailing: "none" normal, "breakeven" si momentum medio, "atr1" si ADX>30
-- WAIT solo si hay contradiccion CLARA o riesgo alto evidente
+=== COMO DECIDIR ===
+OPERA (BUY/SELL) solo si hay confluencia clara:
+- Tendencia definida (EMAs alineadas + ADX>20)
+- Momentum confirmando la direccion (MACD + RSI coherentes)
+- Estructura favorable (no contra S/R fuerte)
+- Noticias no contradicen la direccion
+
+WAIT si:
+- Indicadores contradictorios
+- ADX < 15 (mercado sin fuerza)
+- Noticias fuertes contra la direccion
+- Divergencia contra la direccion propuesta
+- Cualquier duda razonable
+
+Prefiere NO operar a operar mal. Una operacion evitada no pierde dinero.
+
+SL: entre 1.0 y 3.0 ATR | TP: entre 2.0 y 5.0 ATR | R:R minimo 1.5:1
+Trailing: "none", "breakeven" (si momentum medio), "atr1" (si ADX>30)
 
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","reason":"1 frase"}}"""
 
@@ -899,18 +1024,136 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
     }
 
 
+def _consensus_vote_v4(groq_result, gemini_result, stats_result):
+    """
+    Consensus Modelo B v4 - IA como cerebro principal.
+
+    Groq + Gemini votan en paralelo. Stats es solo contexto informativo.
+
+    Reglas:
+    - Ambas fallan (None)         -> WAIT (sin datos no se opera)
+    - 1 falla (None)              -> WAIT (necesitamos 2 opiniones)
+    - 2/2 coinciden BUY/SELL      -> EMITE con media de confianzas
+    - 1 BUY/SELL + 1 WAIT         -> EMITE con confianza reducida (-15)
+    - Se contradicen (BUY vs SELL)-> WAIT
+    - 2/2 WAIT                    -> WAIT
+    """
+    # Si alguna IA fallo, no operar
+    if not groq_result or not gemini_result:
+        failed = []
+        if not groq_result:
+            failed.append("Groq")
+        if not gemini_result:
+            failed.append("Gemini")
+        log("BRAIN", f"WAIT: {'+'.join(failed)} fallo - necesitamos ambas IAs")
+        return {
+            "action": "WAIT",
+            "confidence": 0,
+            "reason": f"IA no disponible ({'+'.join(failed)} fallo)",
+            "votos": {
+                "groq": {"action": "FAIL", "confidence": 0},
+                "gemini": {"action": "FAIL", "confidence": 0},
+                "stats": {"action": stats_result.get("action", "WAIT"), "confidence": stats_result.get("confidence", 0)},
+            },
+            "consensus": "0/2 [IA fail]",
+        }
+
+    v_groq = groq_result.get("action", "WAIT").upper()
+    c_groq = int(groq_result.get("confidence", 0))
+    v_gemini = gemini_result.get("action", "WAIT").upper()
+    c_gemini = int(gemini_result.get("confidence", 0))
+
+    votos_info = {
+        "groq": {"action": v_groq, "confidence": c_groq},
+        "gemini": {"action": v_gemini, "confidence": c_gemini},
+        "stats": {"action": stats_result.get("action", "WAIT"), "confidence": stats_result.get("confidence", 0)},
+    }
+
+    # Reason combinada
+    reason_parts = []
+    if groq_result.get("reason"):
+        reason_parts.append(f"Groq: {groq_result['reason']}")
+    if gemini_result.get("reason"):
+        reason_parts.append(f"Gemini: {gemini_result['reason']}")
+    reason_detail = " | ".join(reason_parts)
+
+    # Parametros SL/TP/trailing: media de ambas IAs (si ambas proponen)
+    sl_atr = _avg_param(groq_result, gemini_result, "sl_atr", 1.5)
+    tp_atr = _avg_param(groq_result, gemini_result, "tp_atr", 3.0)
+    trailing = gemini_result.get("trailing_stop", groq_result.get("trailing_stop", "none"))
+
+    # Caso 1: ambas coinciden en BUY o SELL
+    if v_groq == v_gemini and v_groq in ("BUY", "SELL"):
+        final_action = v_groq
+        final_confidence = int((c_groq + c_gemini) / 2)
+        consensus_str = f"2/2 [{v_groq}]"
+        log("BRAIN", f"CONSENSUS 2/2: {v_groq} (Groq:{c_groq}% Gemini:{c_gemini}% -> {final_confidence}%)")
+
+    # Caso 2: una dice BUY/SELL, otra dice WAIT (no contradice, pero no confirma)
+    elif v_groq in ("BUY", "SELL") and v_gemini == "WAIT":
+        final_action = v_groq
+        final_confidence = max(c_groq - 15, 50)
+        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT]"
+        log("BRAIN", f"CONSENSUS 1/2: {v_groq} (solo Groq, confianza reducida {final_confidence}%)")
+
+    elif v_gemini in ("BUY", "SELL") and v_groq == "WAIT":
+        final_action = v_gemini
+        final_confidence = max(c_gemini - 15, 50)
+        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}]"
+        log("BRAIN", f"CONSENSUS 1/2: {v_gemini} (solo Gemini, confianza reducida {final_confidence}%)")
+
+    # Caso 3: se contradicen (BUY vs SELL)
+    elif {v_groq, v_gemini} == {"BUY", "SELL"}:
+        final_action = "WAIT"
+        final_confidence = 0
+        consensus_str = f"0/2 [CONTRADICCION Groq:{v_groq} vs Gemini:{v_gemini}]"
+        log("BRAIN", f"CONSENSUS CONTRADICCION: Groq={v_groq} vs Gemini={v_gemini} -> WAIT")
+
+    # Caso 4: ambas dicen WAIT
+    else:
+        final_action = "WAIT"
+        final_confidence = 0
+        consensus_str = "0/2 [ambas WAIT]"
+
+    # Gate minimo de confianza
+    if final_action in ("BUY", "SELL") and final_confidence < 50:
+        log("BRAIN", f"Confianza {final_confidence}% < 50% -> WAIT")
+        final_action = "WAIT"
+        final_confidence = 0
+        consensus_str += " [conf<50]"
+
+    return {
+        "action": final_action,
+        "confidence": final_confidence,
+        "sl_atr": sl_atr,
+        "tp_atr": tp_atr,
+        "trailing_stop": trailing,
+        "reason": f"[{consensus_str}] {reason_detail}",
+        "votos": votos_info,
+        "consensus": consensus_str,
+    }
+
+
+def _avg_param(result_a, result_b, key, default):
+    """Media de un parametro numerico de dos resultados de IA."""
+    a = float(result_a.get(key, default)) if result_a else default
+    b = float(result_b.get(key, default)) if result_b else default
+    return round((a + b) / 2, 2)
+
+
 # === PIPELINE PRINCIPAL ======================================================
 
 def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info, htf_trend="N/A"):
     """
-    Pipeline v3.1 completo.
+    Pipeline v4 - IA como cerebro principal (Modelo B).
 
-    1. Safety filter
+    1. Safety filter (sesion, mercado cerrado, spike)
     2. Correlation check
-    3. Modelo Estadistico (siempre)
-    4. Si TQS >= umbral y ia_modo != "off":
-       a. Groq + Gemini en PARALELO (spec PDF v3.1)
-    5. Consensus vote (2/3)
+    3. Modelo Estadistico (gratis, resultado pasa como CONTEXTO a la IA)
+    4. Si ia_modo == "off" -> fallback a Stats (como antes)
+       Si ia_modo == "autonomo" y TF == 1H -> Groq + Gemini en PARALELO deciden
+       Si TF != 1H -> solo Stats (IA solo opera en 1H)
+    5. Consensus Modelo B: 2/2 coinciden=emite, contradicen=WAIT, 1 falla=WAIT
 
     Returns: dict con action, confidence, sl, tp, risk_pct, votos, etc.
     """
@@ -928,12 +1171,12 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         "blocked": False, "blocked_reason": "",
         "trailing_stop": "none",
         "votos": {},
-        "consensus": "0/3",
+        "consensus": "0/2",
         "tqs": engines_result.get("trade_quality_score", 0),
         "regimen": regimen_info.get("regimen", "NORMAL"),
     }
 
-    # 1. Safety filter
+    # 1. Safety filter (sesion, mercado cerrado, volatilidad extrema, swap)
     allowed, reason = safety_filter(snapshot, context, symbol)
     if not allowed:
         result["blocked"] = True
@@ -954,40 +1197,38 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             log("CORR", f"{symbol} BLOQUEADO: {corr_reason}")
             return result
 
-    # 3. Modelo Estadistico (siempre se ejecuta, gratis)
+    # 3. Modelo Estadistico (siempre, gratis - pasa como contexto a IA)
     stats_result = modelo_estadistico(snapshot, engines_result, regimen_info, mtf_info, of_info, sr_info)
     log("STATS", f"{symbol} -> {stats_result['action']} ({stats_result['confidence']}%)")
 
-    # 4. Decidir si consultar IA
+    # 4. Decidir modo de operacion
     tqs = engines_result.get("trade_quality_score", 0)
     ia_modo = state.get("ia_modo", "off")
+    tf_val = str(snapshot.get("temporalidad", "60"))
 
     groq_result = None
     gemini_result = None
 
-    # Umbral TQS segun timeframe (15m mas exigente por ruido)
-    tf_val = str(snapshot.get("temporalidad", "60"))
-    tqs_umbral = engines_result.get("umbral_tqs", 0.65)
-    if tf_val in ("1", "5", "15"):
-        tqs_umbral = max(tqs_umbral, 0.75)
-    if ia_modo == "off" or tqs < tqs_umbral:
-        # Solo Stats, sin IA (ahorra dinero)
+    # IA solo opera en TF 1H. Otros TFs usan Stats como fallback.
+    usa_ia = (ia_modo != "off") and (tf_val == "60")
+
+    if not usa_ia:
+        # Fallback: modelo estadistico (ia_modo=off o TF != 1H)
         if ia_modo == "off":
             log("BRAIN", f"{symbol} IA apagada, solo Stats")
         else:
-            log("BRAIN", f"{symbol} TQS={tqs:.2f} < 0.65, skip IA")
+            log("BRAIN", f"{symbol} TF={tf_val} != 1H, solo Stats")
 
-        # SL/TP segun tipo de activo
-        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
+        _vol_ratio = snapshot.get("vol_ratio", 1.0)
+        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol, _vol_ratio)
 
-        # Sin IA: riesgo segun confianza de Stats
         stats_conf = stats_result["confidence"]
         if stats_conf >= 85:
-            _risk = 1.5    # Stats muy seguro (sin IA, max 1.5%)
+            _risk = 1.5
         elif stats_conf >= 70:
             _risk = 1.0
         else:
-            _risk = 0.5    # Stats poco seguro, reducir riesgo
+            _risk = 0.5
 
         result.update({
             "action": stats_result["action"],
@@ -997,17 +1238,18 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             "risk_pct": _risk,
             "reason": f"[Solo Stats] {stats_result['reason']}",
             "votos": {"stats": {"action": stats_result["action"], "confidence": stats_result["confidence"]}},
-            "consensus": "1/1",
+            "consensus": "1/1 [Stats]",
         })
     else:
-        # Rate limit
+        # === MODELO B: Groq + Gemini deciden en PARALELO ===
         now = time.time()
         if now - _last_call_ts < _MIN_INTERVAL:
             result["reason"] = "Cooldown IA"
             return result
         _last_call_ts = now
 
-        # 4a+4b. Groq + Gemini EN PARALELO (spec PDF v3.1)
+        log("BRAIN", f"{symbol} Modelo B: lanzando Groq + Gemini en paralelo")
+
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_groq = executor.submit(
                 modelo_groq, symbol, snapshot, engines_result, context, htf_trend, sr_info
@@ -1018,23 +1260,26 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             groq_result = future_groq.result()
             gemini_result = future_gemini.result()
 
-        log("BRAIN", f"{symbol} IA paralela: Groq={groq_result.get('action','?') if groq_result else 'FAIL'} "
-            f"Gemini={gemini_result.get('action','?') if gemini_result else 'FAIL'}")
+        log("BRAIN", f"{symbol} Groq={'FAIL' if not groq_result else groq_result.get('action','?')} "
+            f"Gemini={'FAIL' if not gemini_result else gemini_result.get('action','?')}")
 
-        # 5. Consensus
-        consensus = _consensus_vote(stats_result, groq_result, gemini_result)
+        # 5. Consensus Modelo B (IA decide, Stats es contexto)
+        consensus = _consensus_vote_v4(groq_result, gemini_result, stats_result)
 
-        # SL/TP segun tipo de activo
-        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol)
+        # SL/TP: si la IA propone valores, usarlos. Si no, usar optimizados por par.
+        _vol_ratio = snapshot.get("vol_ratio", 1.0)
+        _sl_default, _tp_default = _sl_tp_por_activo(symbol, _vol_ratio)
+        _sl_mult = consensus.get("sl_atr", _sl_default)
+        _tp_mult = consensus.get("tp_atr", _tp_default)
 
         # Riesgo dinamico segun confianza del consensus
         conf = consensus["confidence"]
         if conf >= 85:
-            _risk = 2.0    # Muy alta: IA y Stats alineados
+            _risk = 2.0
         elif conf >= 70:
-            _risk = 1.5    # Alta: buena confirmacion
+            _risk = 1.5
         else:
-            _risk = 1.0    # Normal
+            _risk = 1.0
 
         result.update({
             "action": consensus["action"],
@@ -1042,7 +1287,7 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             "sl_atr_mult": _sl_mult,
             "tp_atr_mult": _tp_mult,
             "risk_pct": _risk,
-            "trailing_stop": "none",
+            "trailing_stop": consensus.get("trailing_stop", "none"),
             "reason": consensus["reason"],
             "votos": consensus["votos"],
             "consensus": consensus["consensus"],
@@ -1050,6 +1295,17 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
 
         if groq_result:
             result["groq_analysis"] = groq_result.get("reason", "")
+
+        # Log de decision IA (descargable para auditoria)
+        interpretation = _interpret_context(symbol, snapshot, engines_result, context, htf_trend, sr_info)
+        _log_ia_decision(
+            symbol=symbol,
+            groq_result=groq_result,
+            gemini_result=gemini_result,
+            consensus=consensus,
+            prompt_summary=interpretation[:500],
+            stats_context=stats_result,
+        )
 
     # Calcular SL/TP final
     precio = snapshot.get("precio", 0)

@@ -77,6 +77,10 @@ class NumpyJSONProvider(DefaultJSONProvider):
 app.json_provider_class = NumpyJSONProvider
 app.json = NumpyJSONProvider(app)
 
+# Cooldown per-symbol: evita re-entrada inmediata tras cierre
+_symbol_cooldown = {}  # {symbol: timestamp_until}
+_COOLDOWN_SECONDS = 3600  # 1 hora de cooldown tras cierre (alineado con TF 1H)
+
 # Cache
 _snapshot_cache = {}
 _htf_cache = {}
@@ -241,15 +245,18 @@ def _on_new_bar(symbol, tf):
         for alerta in alertas:
             mlog("ALERTA", f"{alerta['emoji']} {alerta['mensaje']}")
 
-        # === CAPA 3+4: Brain (Consensus Engine) ===
+        # === CAPA 3+4: Brain v4 (IA como cerebro principal) ===
         tqs = engines_result.get("trade_quality_score", 0)
         direccion = engines_result.get("direccion", "NEUTRAL")
 
-        # Siempre ejecutar modelo estadistico (gratis) para mostrar en consensus
+        # Stats se ejecuta siempre (gratis) - se pasa como CONTEXTO a la IA
         from brain import modelo_estadistico
         stats_result = modelo_estadistico(snapshot, engines_result, reg_info, mtf_info, of_info, sr_info)
 
-        # Guardar consensus con Stats aunque no se llame a IA
+        # Inyectar stats como contexto en engines_result para que la IA lo reciba
+        engines_result["_stats_context"] = stats_result
+
+        # Guardar cache con Stats (se actualiza despues si IA responde)
         with _cache_lock:
             _brain_cache[(symbol, tf)] = {
                 "votos": {
@@ -264,44 +271,40 @@ def _on_new_bar(symbol, tf):
                 "ts": int(time.time()),
             }
 
-        # Bloqueos previos a brain (IA)
+        # === Bloqueos DUROS (solo lo objetivo e indiscutible) ===
         skip_reason = None
-        active_signals = get_active()
-        max_ops = cfg.state.get("max_ops", 3) or 3
-        daily_pnl = cfg.state.get("daily_pnl", 0)
-        capital = cfg.state.get("capital", 10000)
-        dd_pct = abs(daily_pnl) / capital * 100 if capital > 0 and daily_pnl < 0 else 0
 
-        # Aviso (no bloqueo) cuando se supera max_ops
-        if len(active_signals) >= max_ops:
-            mlog("RISK", f"AVISO: {len(active_signals)}/{max_ops} ops activas (superado limite recomendado)")
+        # Cooldown per-symbol (FIX4: no re-entrar inmediatamente tras cierre)
+        cooldown_until = _symbol_cooldown.get(symbol, 0)
+        if time.time() < cooldown_until:
+            remaining = int(cooldown_until - time.time())
+            skip_reason = f"Cooldown {symbol}: {remaining}s restantes"
 
-        if dd_pct >= 5.0:
-            skip_reason = f"Drawdown diario {dd_pct:.1f}% >= 5% limite"
-            mlog("RISK", f"MOTOR BLOQUEADO: drawdown diario {dd_pct:.1f}% >= 5%")
-        elif reg_info.get("bloqueado"):
-            skip_reason = f"Regimen {regimen} bloqueado"
-            mlog("REGIMEN", f"{symbol} CHOPPY - bloqueado")
-        elif direccion == "NEUTRAL" or not engines_result.get("pasa_umbral", False):
-            skip_reason = f"TQS={tqs:.2f} bajo umbral {engines_result.get('umbral_tqs', 0.65)}" if not engines_result.get("pasa_umbral", False) else "Sin direccion"
-        elif snapshot.get("adx", 0) < reg_info.get("adx_min", 20):
-            skip_reason = f"ADX {snapshot.get('adx',0):.1f} < {reg_info.get('adx_min',20)} minimo [{regimen}]"
+        # Spike de manipulacion detectado (dato objetivo, no opinion)
         elif manip_info.get("spike_detectado"):
             skip_reason = "Spike detectado"
             mlog("MANIP", f"{symbol} Spike detectado - skip senal")
-        elif mtf_info.get("mtf_dir") == "BLOCK":
-            skip_reason = "MTF conflicto"
-            mlog("MTF", f"{symbol} MTF conflicto - bloqueado")
+
+        # Drawdown diario extremo (proteccion de capital)
+        elif cfg.state.get("daily_pnl", 0) < 0:
+            capital = cfg.state.get("capital", 10000)
+            dd_pct = abs(cfg.state["daily_pnl"]) / capital * 100 if capital > 0 else 0
+            if dd_pct >= 5.0:
+                skip_reason = f"Drawdown diario {dd_pct:.1f}% >= 5%"
+                mlog("RISK", f"MOTOR BLOQUEADO: drawdown diario {dd_pct:.1f}%")
+
+        # NOTA: Regimen CHOPPY, TQS bajo, ADX bajo, MTF conflicto YA NO bloquean.
+        # Esos datos se pasan a la IA via _interpret_context() y ella decide.
+        # La IA los ve como: "SIN MOMENTUM: ADX=12", "Regimen: CHOPPY", "MTF BLOCK", etc.
 
         if skip_reason:
-            # Mantener votos de Stats pero anadir razon de bloqueo
             with _cache_lock:
                 existing = _brain_cache.get((symbol, tf), {})
                 existing["reason"] = f"[Stats: {stats_result['action']} {stats_result['confidence']}%] {skip_reason}"
             _log_cycle(symbol, tf, snapshot, htf, tqs, regimen, engines_result, skip_reason)
             return
 
-        # Brain analyze
+        # Brain v4: IA decide (Modelo B en TF 1H, Stats fallback en otros TFs)
         result = brain_analyze(
             symbol, snapshot, engines_result, context,
             reg_info, mtf_info, of_info, sr_info,
@@ -627,15 +630,24 @@ def _alert_checker():
 _SCAN_INTERVAL = 300  # Escaneo completo cada 5 minutos
 _SCAN_TIMEFRAMES = ["15", "60", "240"]  # Multi-timeframe: 15m, 1H, 4H
 _last_full_scan = 0
+_last_daily_reset_date = None
 
 
 def _full_scan_loop():
     """Hilo que analiza TODOS los pares en multiples timeframes periodicamente.
     Complementa el callback de cierre de vela para no esperar 1h entre analisis."""
-    global _last_full_scan
+    global _last_full_scan, _last_daily_reset_date
     time.sleep(30)  # Esperar a que el motor arranque y tenga datos
     while True:
         try:
+            # Reset diario de daily_pnl y cooldowns
+            today = datetime.now().strftime("%Y-%m-%d")
+            if _last_daily_reset_date != today:
+                _last_daily_reset_date = today
+                cfg.state["daily_pnl"] = 0.0
+                _symbol_cooldown.clear()
+                mlog("MOTOR", f"Reset diario: daily_pnl=0, cooldowns limpiados ({today})")
+
             if not cfg.state.get("motor_activo", True):
                 time.sleep(10)
                 continue
@@ -1142,6 +1154,46 @@ def ia_toggle():
     cfg.guardar()
     mlog("IA", f"IA modo: {cfg.state['ia_modo']}")
     return jsonify({"ia_modo": cfg.state["ia_modo"]})
+
+
+@app.route("/ia/log", methods=["GET"])
+def ia_decisions_log():
+    """Descarga el log de decisiones IA (ia_decisions.jsonl).
+    Params: ?last=N (ultimas N decisiones, default 100)
+    """
+    from brain import IA_DECISIONS_LOG
+    import os
+    if not os.path.exists(IA_DECISIONS_LOG):
+        return jsonify({"decisions": [], "total": 0})
+
+    last_n = request.args.get("last", 100, type=int)
+    try:
+        with open(IA_DECISIONS_LOG, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Ultimas N lineas
+        recent = lines[-last_n:] if len(lines) > last_n else lines
+        decisions = []
+        for line in recent:
+            line = line.strip()
+            if line:
+                try:
+                    decisions.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        return jsonify({"decisions": list(reversed(decisions)), "total": len(lines)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ia/log/download", methods=["GET"])
+def ia_log_download():
+    """Descarga el archivo completo ia_decisions.jsonl."""
+    from brain import IA_DECISIONS_LOG
+    from flask import send_file
+    import os
+    if not os.path.exists(IA_DECISIONS_LOG):
+        return jsonify({"error": "No hay log de decisiones aun"}), 404
+    return send_file(IA_DECISIONS_LOG, as_attachment=True, download_name="ia_decisions.jsonl")
 
 
 # === Config ===
