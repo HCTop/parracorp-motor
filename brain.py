@@ -529,11 +529,17 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
     else:
         lines.append(f"SIN MOMENTUM: ADX={adx:.0f} (mercado sin fuerza, evitar)")
 
-    # RSI
+    # RSI (interpretar segun tendencia, no al reves)
     if rsi > 70:
-        lines.append(f"⚠️ SOBRECOMPRA: RSI={rsi:.0f} - NO comprar, posible venta")
+        if adx > 25:
+            lines.append(f"RSI={rsi:.0f} sobrecompra EN TENDENCIA ALCISTA FUERTE - puede seguir subiendo")
+        else:
+            lines.append(f"⚠️ SOBRECOMPRA: RSI={rsi:.0f} - agotamiento probable, NO comprar")
     elif rsi < 30:
-        lines.append(f"⚠️ SOBREVENTA: RSI={rsi:.0f} - NO vender, posible compra")
+        if adx > 25:
+            lines.append(f"RSI={rsi:.0f} sobreventa EN TENDENCIA BAJISTA FUERTE - puede seguir cayendo, NO comprar")
+        else:
+            lines.append(f"RSI={rsi:.0f} sobreventa en mercado sin tendencia - posible rebote")
     elif rsi > 60:
         lines.append(f"RSI={rsi:.0f} alcista")
     elif rsi < 40:
@@ -555,16 +561,25 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
     elif vol_ratio < 0.7:
         lines.append(f"Volumen bajo ({vol_ratio:.1f}x) - señales menos fiables")
 
-    # Z-Score (mean reversion)
+    # Z-Score (solo relevante sin tendencia fuerte)
     if abs(zscore) > 2.0:
-        dir_z = "sobrevalorado (posible venta)" if zscore > 0 else "infravalorado (posible compra)"
-        lines.append(f"Z-Score={zscore:.1f}: precio {dir_z}")
+        if adx > 25:
+            dir_z = "muy extendido EN tendencia fuerte (puede seguir)" if zscore > 0 else "muy caido EN tendencia bajista fuerte (puede seguir cayendo)"
+        else:
+            dir_z = "sobrevalorado (posible venta)" if zscore > 0 else "infravalorado (posible rebote)"
+        lines.append(f"Z-Score={zscore:.1f}: {dir_z}")
 
-    # Stoch
+    # Stoch (interpretar segun tendencia)
     if stoch_k > 80:
-        lines.append(f"Estocastico sobrecomprado ({stoch_k:.0f})")
+        if adx > 25:
+            lines.append(f"Estocastico alto ({stoch_k:.0f}) en tendencia fuerte - NO es señal de venta")
+        else:
+            lines.append(f"Estocastico sobrecomprado ({stoch_k:.0f}) - posible techo")
     elif stoch_k < 20:
-        lines.append(f"Estocastico sobrevendido ({stoch_k:.0f})")
+        if adx > 25:
+            lines.append(f"Estocastico bajo ({stoch_k:.0f}) en tendencia bajista fuerte - NO es señal de compra")
+        else:
+            lines.append(f"Estocastico sobrevendido ({stoch_k:.0f}) - posible suelo")
 
     # Motores
     mom = engines_result.get("momentum_score", 0)
@@ -671,15 +686,21 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 {snapshot.get('hist_chart', 'No disponible')}
 {stats_text}
 
+=== REGLA PRINCIPAL: OPERA A FAVOR DE LA TENDENCIA ===
+NUNCA operes contra la tendencia dominante. Si las EMAs estan alineadas bajistas y ADX>20, solo SELL o WAIT. Si las EMAs estan alineadas alcistas y ADX>20, solo BUY o WAIT.
+RSI sobrevendido (<30) en tendencia bajista fuerte NO es señal de compra, es confirmacion de fuerza bajista.
+RSI sobrecomprado (>70) en tendencia alcista fuerte NO es señal de venta, es confirmacion de fuerza alcista.
+Solo interpreta RSI como señal contraria cuando ADX<20 (mercado lateral).
+
 === COMO DECIDIR ===
-OPERA (BUY/SELL) solo si hay confluencia clara:
-- Tendencia definida (EMAs alineadas + ADX>20)
-- Momentum confirmando la direccion (MACD + RSI coherentes)
-- Estructura favorable (no contra S/R fuerte, no en zona de congestion)
+OPERA (BUY/SELL) solo si TODO confluye:
+- Tendencia definida (EMAs alineadas + ADX>20) y operas A FAVOR
+- MACD confirma la direccion de la tendencia
+- Estructura favorable (no contra S/R fuerte)
 - Volumen apoyando (vol_ratio > 0.8)
 
 WAIT si:
-- Indicadores contradictorios (tendencia vs momentum)
+- Indicadores contradictorios (quieres BUY pero EMAs bajistas, etc.)
 - ADX < 15 (sin fuerza, mercado muerto)
 - Precio atrapado entre S/R sin direccion
 - Divergencia contra la direccion propuesta
@@ -854,16 +875,22 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 Sentimiento: {news.get('sentiment','neutral')}
 {stats_text}
 
+=== REGLA PRINCIPAL: OPERA A FAVOR DE LA TENDENCIA ===
+NUNCA operes contra la tendencia dominante. Si las EMAs estan alineadas bajistas y ADX>20, solo SELL o WAIT. Si las EMAs estan alineadas alcistas y ADX>20, solo BUY o WAIT.
+RSI sobrevendido (<30) en tendencia bajista fuerte NO es señal de compra, es confirmacion de fuerza bajista.
+RSI sobrecomprado (>70) en tendencia alcista fuerte NO es señal de venta, es confirmacion de fuerza alcista.
+Solo interpreta RSI como señal contraria cuando ADX<20 (mercado lateral).
+
 === COMO DECIDIR ===
-OPERA (BUY/SELL) solo si hay confluencia clara:
-- Tendencia definida (EMAs alineadas + ADX>20)
-- Momentum confirmando la direccion (MACD + RSI coherentes)
+OPERA (BUY/SELL) solo si TODO confluye:
+- Tendencia definida (EMAs alineadas + ADX>20) y operas A FAVOR
+- MACD confirma la direccion de la tendencia
 - Estructura favorable (no contra S/R fuerte)
 - Noticias no contradicen la direccion
 
 WAIT si:
-- Indicadores contradictorios
-- ADX < 15 (mercado sin fuerza)
+- Indicadores contradictorios (quieres BUY pero EMAs bajistas, etc.)
+- ADX < 15 (sin fuerza, mercado muerto)
 - Noticias fuertes contra la direccion
 - Divergencia contra la direccion propuesta
 - Cualquier duda razonable
