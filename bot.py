@@ -256,18 +256,18 @@ def _on_new_bar(symbol, tf):
         # Inyectar stats como contexto en engines_result para que la IA lo reciba
         engines_result["_stats_context"] = stats_result
 
-        # Guardar cache con Stats (se actualiza despues si IA responde)
+        # Guardar cache pre-IA (Groq/Gemini pendientes, Stats como referencia)
         with _cache_lock:
             _brain_cache[(symbol, tf)] = {
                 "votos": {
+                    "groq": _brain_cache.get((symbol, tf), {}).get("votos", {}).get("groq", {"action": "PENDING", "confidence": 0}),
+                    "gemini": _brain_cache.get((symbol, tf), {}).get("votos", {}).get("gemini", {"action": "PENDING", "confidence": 0}),
                     "stats": {"action": stats_result["action"], "confidence": stats_result["confidence"]},
-                    "groq": _brain_cache.get((symbol, tf), {}).get("votos", {}).get("groq", {"action": "WAIT", "confidence": 0}),
-                    "gemini": _brain_cache.get((symbol, tf), {}).get("votos", {}).get("gemini", {"action": "WAIT", "confidence": 0}),
                 },
-                "consensus": f"1/1 [Stats]",
-                "action": stats_result["action"],
-                "confidence": stats_result["confidence"],
-                "reason": stats_result.get("reason", ""),
+                "consensus": "pendiente",
+                "action": "WAIT",
+                "confidence": 0,
+                "reason": f"[Stats ref: {stats_result['action']} {stats_result['confidence']}%] Esperando IA...",
                 "ts": int(time.time()),
             }
 
