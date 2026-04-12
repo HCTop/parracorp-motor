@@ -768,6 +768,156 @@ def estado():
         return jsonify({"error": str(e), "traceback": tb}), 500
 
 
+def _tech_summary(snapshot):
+    """Calcula resumen tecnico estilo Investing.com: buy/sell/neutral por MAs e indicadores."""
+    precio = snapshot.get("precio", 0)
+    if not precio:
+        return {"ma": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral"},
+                "indicators": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral"},
+                "summary": {"buy": 0, "sell": 0, "neutral": 0, "label": "Neutral", "score": 0}}
+
+    # --- Moving Averages ---
+    ma_buy, ma_sell, ma_neutral = 0, 0, 0
+    for ema_key in ("ema9", "ema20", "ema35", "ema50", "ema200"):
+        val = snapshot.get(ema_key, 0)
+        if val > 0:
+            if precio > val:
+                ma_buy += 1
+            elif precio < val:
+                ma_sell += 1
+            else:
+                ma_neutral += 1
+    # SMA20 (bb_mid ~ sma20)
+    sma20 = snapshot.get("sma20", 0) or snapshot.get("bb_mid", 0)
+    if sma20 > 0:
+        if precio > sma20:
+            ma_buy += 1
+        elif precio < sma20:
+            ma_sell += 1
+        else:
+            ma_neutral += 1
+    # Supertrend como MA
+    st = snapshot.get("supertrend", "")
+    if st == "up":
+        ma_buy += 1
+    elif st == "down":
+        ma_sell += 1
+    # VWAP
+    vwap = snapshot.get("vwap_proxy", 0)
+    if vwap > 0:
+        if precio > vwap:
+            ma_buy += 1
+        elif precio < vwap:
+            ma_sell += 1
+        else:
+            ma_neutral += 1
+
+    # --- Technical Indicators ---
+    ind_buy, ind_sell, ind_neutral = 0, 0, 0
+    # RSI
+    rsi = snapshot.get("rsi", 50)
+    if rsi > 60:
+        ind_buy += 1
+    elif rsi < 40:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+    # Stochastic
+    stoch_k = snapshot.get("stoch_k", 50)
+    stoch_d = snapshot.get("stoch_d", 50)
+    if stoch_k > 80:
+        ind_sell += 1
+    elif stoch_k < 20:
+        ind_buy += 1  # oversold bounce
+    elif stoch_k > stoch_d:
+        ind_buy += 1
+    elif stoch_k < stoch_d:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+    # MACD
+    macd = snapshot.get("macd_hist", 0)
+    if macd > 0:
+        ind_buy += 1
+    elif macd < 0:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+    # ADX + DI
+    adx = snapshot.get("adx", 0)
+    di_plus = snapshot.get("di_plus", 0)
+    di_minus = snapshot.get("di_minus", 0)
+    if adx > 20:
+        if di_plus > di_minus:
+            ind_buy += 1
+        else:
+            ind_sell += 1
+    else:
+        ind_neutral += 1
+    # CCI
+    cci = snapshot.get("cci", 0)
+    if cci > 100:
+        ind_buy += 1
+    elif cci < -100:
+        ind_sell += 1
+    else:
+        ind_neutral += 1
+    # Williams %R
+    wr = snapshot.get("williams_r", -50)
+    if wr > -20:
+        ind_sell += 1
+    elif wr < -80:
+        ind_buy += 1
+    else:
+        ind_neutral += 1
+    # Bollinger position
+    bb_upper = snapshot.get("bb_upper", 0)
+    bb_lower = snapshot.get("bb_lower", 0)
+    if bb_upper > 0 and bb_lower > 0:
+        bb_mid = (bb_upper + bb_lower) / 2
+        if precio > bb_mid:
+            ind_buy += 1
+        elif precio < bb_mid:
+            ind_sell += 1
+        else:
+            ind_neutral += 1
+
+    def _label(b, s, n):
+        total = b + s + n
+        if total == 0:
+            return "Neutral"
+        ratio_buy = b / total
+        ratio_sell = s / total
+        if ratio_buy >= 0.65:
+            return "Strong Buy"
+        elif ratio_buy >= 0.45:
+            return "Buy"
+        elif ratio_sell >= 0.65:
+            return "Strong Sell"
+        elif ratio_sell >= 0.45:
+            return "Sell"
+        return "Neutral"
+
+    def _score(b, s, n):
+        total = b + s + n
+        if total == 0:
+            return 0.0
+        return round((b - s) / total, 2)  # -1.0 (strong sell) to +1.0 (strong buy)
+
+    tb = ma_buy + ind_buy
+    ts = ma_sell + ind_sell
+    tn = ma_neutral + ind_neutral
+
+    return {
+        "ma": {"buy": ma_buy, "sell": ma_sell, "neutral": ma_neutral,
+               "label": _label(ma_buy, ma_sell, ma_neutral), "score": _score(ma_buy, ma_sell, ma_neutral)},
+        "indicators": {"buy": ind_buy, "sell": ind_sell, "neutral": ind_neutral,
+                       "label": _label(ind_buy, ind_sell, ind_neutral), "score": _score(ind_buy, ind_sell, ind_neutral)},
+        "summary": {"buy": tb, "sell": ts, "neutral": tn,
+                    "label": _label(tb, ts, tn), "score": _score(tb, ts, tn)},
+    }
+
+
 def _build_estado(sym, tf):
     with _cache_lock:
         snapshot = _snapshot_cache.get((sym, tf)) or {}
@@ -997,6 +1147,8 @@ def _build_estado(sym, tf):
         "events": events,
         "news": news,
         "bank_holiday": bank,
+        # Resumen tecnico (gauges)
+        "tech_summary": _tech_summary(snapshot),
         # Senal activa
         "senal": active[0] if active else None,
         "senales_activas": len(active),
