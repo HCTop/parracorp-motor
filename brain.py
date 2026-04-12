@@ -1030,11 +1030,11 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
 
     Groq + Gemini votan en paralelo. Stats es solo contexto informativo.
 
-    Reglas:
+    Reglas (estricto 2/2):
     - Ambas fallan (None)         -> WAIT (sin datos no se opera)
     - 1 falla (None)              -> WAIT (necesitamos 2 opiniones)
     - 2/2 coinciden BUY/SELL      -> EMITE con media de confianzas
-    - 1 BUY/SELL + 1 WAIT         -> EMITE con confianza reducida (-15)
+    - 1 BUY/SELL + 1 WAIT         -> WAIT (necesitamos ambas de acuerdo)
     - Se contradicen (BUY vs SELL)-> WAIT
     - 2/2 WAIT                    -> WAIT
     """
@@ -1089,18 +1089,18 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
         consensus_str = f"2/2 [{v_groq}]"
         log("BRAIN", f"CONSENSUS 2/2: {v_groq} (Groq:{c_groq}% Gemini:{c_gemini}% -> {final_confidence}%)")
 
-    # Caso 2: una dice BUY/SELL, otra dice WAIT (no contradice, pero no confirma)
+    # Caso 2: una dice BUY/SELL, otra dice WAIT -> NO operar (necesitamos 2/2)
     elif v_groq in ("BUY", "SELL") and v_gemini == "WAIT":
-        final_action = v_groq
-        final_confidence = max(c_groq - 15, 50)
-        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT]"
-        log("BRAIN", f"CONSENSUS 1/2: {v_groq} (solo Groq, confianza reducida {final_confidence}%)")
+        final_action = "WAIT"
+        final_confidence = 0
+        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT] -> WAIT (requiere 2/2)"
+        log("BRAIN", f"CONSENSUS 1/2: Groq={v_groq} pero Gemini=WAIT -> NO OPERAR (requiere 2/2)")
 
     elif v_gemini in ("BUY", "SELL") and v_groq == "WAIT":
-        final_action = v_gemini
-        final_confidence = max(c_gemini - 15, 50)
-        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}]"
-        log("BRAIN", f"CONSENSUS 1/2: {v_gemini} (solo Gemini, confianza reducida {final_confidence}%)")
+        final_action = "WAIT"
+        final_confidence = 0
+        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}] -> WAIT (requiere 2/2)"
+        log("BRAIN", f"CONSENSUS 1/2: Gemini={v_gemini} pero Groq=WAIT -> NO OPERAR (requiere 2/2)")
 
     # Caso 3: se contradicen (BUY vs SELL)
     elif {v_groq, v_gemini} == {"BUY", "SELL"}:
@@ -1255,14 +1255,8 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         _sl_mult = consensus.get("sl_atr", _sl_default)
         _tp_mult = consensus.get("tp_atr", _tp_default)
 
-        # Riesgo dinamico segun confianza del consensus
-        conf = consensus["confidence"]
-        if conf >= 85:
-            _risk = 2.0
-        elif conf >= 70:
-            _risk = 1.5
-        else:
-            _risk = 1.0
+        # Riesgo fijo 1% - nunca escalar para proteger el capital
+        _risk = 1.0
 
         result.update({
             "action": consensus["action"],
