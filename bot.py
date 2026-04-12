@@ -918,6 +918,21 @@ def _tech_summary(snapshot):
     }
 
 
+def _tech_mtf(sym):
+    """Resumen tecnico por cada timeframe cacheado."""
+    tf_labels = {"15": "15 Min", "60": "1 Hora", "240": "4 Horas"}
+    result = {}
+    with _cache_lock:
+        for tf_key, tf_name in tf_labels.items():
+            snap = _snapshot_cache.get((sym, tf_key))
+            if snap:
+                s = _tech_summary(snap)
+                result[tf_key] = {"name": tf_name, "label": s["summary"]["label"], "score": s["summary"]["score"]}
+            else:
+                result[tf_key] = {"name": tf_name, "label": "N/A", "score": 0}
+    return result
+
+
 def _build_estado(sym, tf):
     with _cache_lock:
         snapshot = _snapshot_cache.get((sym, tf)) or {}
@@ -1149,6 +1164,7 @@ def _build_estado(sym, tf):
         "bank_holiday": bank,
         # Resumen tecnico (gauges)
         "tech_summary": _tech_summary(snapshot),
+        "tech_mtf": _tech_mtf(sym),
         # Senal activa
         "senal": active[0] if active else None,
         "senales_activas": len(active),
