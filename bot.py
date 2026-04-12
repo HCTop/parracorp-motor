@@ -870,6 +870,7 @@ def _build_estado(sym, tf):
 
     try:
         active = get_active()
+        _enrich_pnl_live(active)
     except Exception:
         active = []
     try:
@@ -1019,9 +1020,33 @@ def _build_estado(sym, tf):
     })
 
 
+def _enrich_pnl_live(signals_list):
+    """Enriquece señales activas con pnl_usd y pnl_eur en tiempo real."""
+    from risk_engine import pnl_usd
+    eurusd = get_price("EURUSD") or 1.08
+    for sig in signals_list:
+        if sig.get("status") != "ACTIVE":
+            continue
+        try:
+            p = get_price(sig["symbol"])
+            if not p or p <= 0:
+                continue
+            sig["current_price"] = p
+            entry = sig["entry_price"]
+            action = sig["action"]
+            lote = sig.get("lote", 0)
+            sig["pnl_usd"] = pnl_usd(entry, p, lote, sig["symbol"], action)
+            sig["pnl_eur"] = round(sig["pnl_usd"] / eurusd, 2) if eurusd > 0 else sig["pnl_usd"]
+        except Exception:
+            pass
+    return signals_list
+
+
 @app.route("/signals/active")
 def signals_active():
-    return jsonify(get_active())
+    active = get_active()
+    _enrich_pnl_live(active)
+    return jsonify(active)
 
 
 @app.route("/signals/history")
@@ -1031,13 +1056,7 @@ def signals_history():
     history = get_history(limit)
     if include_active:
         active = get_active()
-        # Enriquecer activas con precio actual para P&L en tiempo real
-        for sig in active:
-            try:
-                p = get_price(sig["symbol"])
-                sig["current_price"] = p if p else 0
-            except Exception:
-                sig["current_price"] = 0
+        _enrich_pnl_live(active)
         # Prepend active signals (most recent first, before closed history)
         return jsonify(active + history)
     return jsonify(history)
