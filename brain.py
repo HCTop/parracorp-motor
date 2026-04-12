@@ -1077,9 +1077,11 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
         reason_parts.append(f"Gemini: {gemini_result['reason']}")
     reason_detail = " | ".join(reason_parts)
 
-    # Parametros SL/TP/trailing: media de ambas IAs (si ambas proponen)
+    # Parametros SL/TP/riesgo/trailing: media de ambas IAs (si ambas proponen)
     sl_atr = _avg_param(groq_result, gemini_result, "sl_atr", 1.5)
     tp_atr = _avg_param(groq_result, gemini_result, "tp_atr", 3.0)
+    risk_pct = _avg_param(groq_result, gemini_result, "risk_pct", 1.0)
+    risk_pct = round(min(max(risk_pct, 0.5), 2.0), 2)  # clamp 0.5%-2%
     trailing = gemini_result.get("trailing_stop", groq_result.get("trailing_stop", "none"))
 
     # Caso 1: ambas coinciden en BUY o SELL
@@ -1127,6 +1129,7 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
         "confidence": final_confidence,
         "sl_atr": sl_atr,
         "tp_atr": tp_atr,
+        "risk_pct": risk_pct,
         "trailing_stop": trailing,
         "reason": f"[{consensus_str}] {reason_detail}",
         "votos": votos_info,
@@ -1255,8 +1258,8 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
         _sl_mult = consensus.get("sl_atr", _sl_default)
         _tp_mult = consensus.get("tp_atr", _tp_default)
 
-        # Riesgo fijo 1% - nunca escalar para proteger el capital
-        _risk = 1.0
+        # Riesgo: media de lo que proponen Groq y Gemini (clamped 0.5%-2%)
+        _risk = consensus.get("risk_pct", 1.0)
 
         result.update({
             "action": consensus["action"],
