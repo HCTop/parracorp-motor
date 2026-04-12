@@ -1213,33 +1213,16 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
     usa_ia = (ia_modo != "off") and (tf_val == "60")
 
     if not usa_ia:
-        # Fallback: modelo estadistico (ia_modo=off o TF != 1H)
         if ia_modo == "off":
-            log("BRAIN", f"{symbol} IA apagada, solo Stats")
+            # IA apagada = no operar. Motor detenido.
+            log("BRAIN", f"{symbol} IA APAGADA - no se emiten senales")
+            result["reason"] = "IA apagada"
+            return result
         else:
-            log("BRAIN", f"{symbol} TF={tf_val} != 1H, solo Stats")
-
-        _vol_ratio = snapshot.get("vol_ratio", 1.0)
-        _sl_mult, _tp_mult = _sl_tp_por_activo(symbol, _vol_ratio)
-
-        stats_conf = stats_result["confidence"]
-        if stats_conf >= 85:
-            _risk = 1.5
-        elif stats_conf >= 70:
-            _risk = 1.0
-        else:
-            _risk = 0.5
-
-        result.update({
-            "action": stats_result["action"],
-            "confidence": stats_result["confidence"],
-            "sl_atr_mult": _sl_mult,
-            "tp_atr_mult": _tp_mult,
-            "risk_pct": _risk,
-            "reason": f"[Solo Stats] {stats_result['reason']}",
-            "votos": {"stats": {"action": stats_result["action"], "confidence": stats_result["confidence"]}},
-            "consensus": "1/1 [Stats]",
-        })
+            # TF != 1H: no llamar a IA (solo opera en 1H)
+            log("BRAIN", f"{symbol} TF={tf_val} != 1H, skip")
+            result["reason"] = f"TF={tf_val} != 1H"
+            return result
     else:
         # === MODELO B: Groq + Gemini deciden en PARALELO ===
         now = time.time()
