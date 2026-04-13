@@ -158,9 +158,9 @@ def generate_pdf():
     pdf.bullet("1. SNAPSHOT: Recoger datos OHLCV + calcular 30+ indicadores tecnicos con pandas-ta")
     pdf.bullet("2. FILTRO DE SEGURIDAD (Hard Rules): Reglas programadas que bloquean ANTES de gastar llamadas IA")
     pdf.bullet("3. FILTRO DE CONFLUENCIA: Minimo 3/4 indicadores basicos alineados (EMA9/20, SuperTrend, MACD, RSI)")
-    pdf.bullet("4. GROQ (Llama 3.3 70B): Analisis tecnico rapido. Recibe todos los indicadores y responde BUY/SELL/WAIT con confianza 0-100")
-    pdf.bullet("5. GEMINI (2.5 Flash): Validador final. Puede confirmar o vetar la senal de Groq. Recibe indicadores + noticias + contexto macro")
-    pdf.bullet("6. EMISION: Si ambas IA confirman, se crea la senal con entry/SL/TP y se envia push notification")
+    pdf.bullet("4. GROQ (Llama 3.3 70B): Analisis tecnico libre. Recibe datos puros y decide BUY/SELL/WAIT independientemente")
+    pdf.bullet("5. GEMINI (2.5 Flash): Analisis paralelo. Recibe indicadores + noticias. Decide independientemente")
+    pdf.bullet("6. CONSENSO 2/2: Solo opera si AMBAS IAs coinciden en BUY o SELL. Stats es solo referencia")
 
     pdf.subtitle("2.2 Filtros de Seguridad (Hard Rules)")
     pdf.body_text("Antes de consultar IA, estas reglas bloquean automaticamente:")
@@ -183,7 +183,7 @@ def generate_pdf():
     pdf.ln(4)
     pdf.body_text(
         "Groq tiene rotacion de 4 API keys. Gemini tiene 4 keys con rotacion automatica en 429. "
-        "Si Gemini no responde, Groq puede operar solo si confianza >= 80% y las noticias no contradicen."
+        "Si alguna IA falla (error API), NO se opera. Se requieren ambas respuestas para consenso."
     )
 
     # =========================================================================
@@ -337,15 +337,12 @@ def generate_pdf():
         "de cambio EURUSD en tiempo real. Limites ESMA EU: 1:30 forex majors, 1:20 minors/metales/indices, 1:2 crypto."
     )
 
-    pdf.subtitle("6.4 Trailing Stop")
+    pdf.subtitle("6.4 Trailing Stop (ELIMINADO en v4)")
     pdf.body_text(
-        "La IA decide si aplicar trailing stop en cada senal segun el momentum y ADX:\n"
-        "- none: Sin trailing stop (por defecto, solo si la IA no lo indica)\n"
-        "- breakeven: Mover SL a precio de entrada cuando avanza >= 50% hacia TP\n"
-        "- atr1: Trailing ATR - SL sigue al precio a distancia de 1 ATR\n"
-        "- atr2: Trailing agresivo, mover SL cada +0.5 ATR\n\n"
-        "IMPORTANTE: No todas las operaciones tienen trailing stop. Solo se activa cuando "
-        "la IA lo recomienda explicitamente en el campo trailing_stop de su respuesta JSON."
+        "NOTA: Los trailing stops automaticos han sido ELIMINADOS en el Modelo B v4.\n"
+        "Todas las operaciones usan SL/TP fijos. En su lugar se envian alertas "
+        "inteligentes al 50% y 70% del TP con SL sugerido para que el usuario "
+        "decida manualmente. Ver seccion 17.5 y 17.6 para detalles."
     )
 
     pdf.subtitle("6.5 Protecciones Automaticas")
@@ -959,6 +956,152 @@ def generate_pdf():
         "NOTA: La watchlist esta vacia por defecto. El usuario selecciona manualmente "
         "los activos desde la app. Todos los pares del catalogo son activables/desactivables."
     )
+
+    # =========================================================================
+    # 17. ACTUALIZACION MAYOR: MODELO B v4 (Abril 2026)
+    # =========================================================================
+    pdf.add_page()
+    pdf.title_section("17. MODELO B v4 - REDISENO IA (Abril 2026)")
+
+    pdf.body_text(
+        "Rediseno completo del sistema de consenso IA, prompts, gestion de riesgo, "
+        "calculo de lotes, PnL en EUR, analisis tecnico visual y alertas inteligentes."
+    )
+
+    pdf.subtitle("17.1 Consenso 2/2 Estricto (Groq + Gemini)")
+    pdf.body_text(
+        "Modelo B v4: Groq y Gemini son los decisores principales. Stats es solo referencia.\n\n"
+        "Reglas de consenso:\n"
+        "- 2/2 coinciden BUY/SELL -> EMITE senal (media de confianzas)\n"
+        "- 1 BUY/SELL + 1 WAIT -> NO opera (requiere acuerdo de ambas)\n"
+        "- Se contradicen (BUY vs SELL) -> WAIT\n"
+        "- Ambas WAIT -> WAIT\n"
+        "- Una o ambas fallan (error API) -> WAIT\n"
+        "- Gate minimo de confianza: 50% (por debajo no opera)\n\n"
+        "El riesgo (risk_pct) lo deciden las IAs: media de ambas, clamped 0.5%-2.0%.\n"
+        "SL/TP en ATR: media de ambas propuestas."
+    )
+
+    pdf.subtitle("17.2 Prompts Neutros (IA Libre)")
+    pdf.body_text(
+        "Los prompts de Groq y Gemini ya NO condicionan la decision de la IA. "
+        "Antes incluian reglas como 'NO comprar si RSI<30', 'Prefiere NO operar', "
+        "'Busca oportunidades activamente', etc.\n\n"
+        "Ahora el prompt solo dice:\n"
+        "'Eres un analista tecnico profesional. Analiza los datos del mercado y decide "
+        "libremente si operar o no. Responde BUY, SELL o WAIT segun tu propio criterio.'\n\n"
+        "La IA recibe todos los datos (indicadores, velas, motores, order flow, noticias) "
+        "y decide por si misma sin instrucciones de cuando operar o no."
+    )
+
+    pdf.subtitle("17.3 Contexto Descriptivo (Sin Recomendaciones)")
+    pdf.body_text(
+        "La funcion _interpret_context() ahora solo describe datos, sin dar recomendaciones:\n\n"
+        "ANTES: 'RSI=28 sobreventa EN TENDENCIA BAJISTA - NO comprar'\n"
+        "AHORA: 'RSI=28 sobreventa (ADX=32)'\n\n"
+        "ANTES: 'Estocastico bajo (18) en tendencia bajista - NO es senal de compra'\n"
+        "AHORA: 'Estocastico K=18 D=22 [SOBREVENTA] K<D (bajista)'\n\n"
+        "La IA ve los datos puros y decide ella misma como interpretarlos."
+    )
+
+    pdf.subtitle("17.4 Datos Completos para IA")
+    pdf.body_text("Las IAs ahora reciben indicadores adicionales de sobrecompra/sobreventa:")
+    pdf.bullet("Estocastico K y D con cruce (K>D alcista, K<D bajista) y zona [SOBRECOMPRA/SOBREVENTA]")
+    pdf.bullet("CCI con zona: CCI=142 [SOBRECOMPRA] o CCI=-130 [SOBREVENTA]")
+    pdf.bullet("Williams %R: valor numerico completo")
+    pdf.bullet("Z-Score: cuando |z| > 1.0 (antes solo > 2.0)")
+    pdf.bullet("Estos datos ayudan a la IA a ajustar TP y detectar agotamiento de tendencia")
+
+    pdf.subtitle("17.5 Trailing Stops Eliminados")
+    pdf.body_text(
+        "Se han eliminado TODOS los trailing stops automaticos (breakeven y atr1).\n\n"
+        "Razon: El trailing atr1 cerraba operaciones en negativo que estaban en positivo, "
+        "porque retrocesos normales del mercado activaban el SL movil antes de llegar al TP.\n\n"
+        "Ahora las operaciones van directo a SL o TP fijos. La IA ya no puede pedir trailing "
+        "en su respuesta JSON. Todas las senales se emiten con trailing_stop='none'.\n\n"
+        "En su lugar, se envian alertas inteligentes al 50% y 70% del TP para que el usuario "
+        "decida manualmente si mover el SL o cerrar."
+    )
+
+    pdf.subtitle("17.6 Alertas Inteligentes 50%/70% TP")
+    pdf.body_text(
+        "Cuando una operacion activa alcanza el 50% o 70% del camino hacia el TP, "
+        "se envia alerta a Push, Telegram y WhatsApp.\n\n"
+        "Al 50% del TP: sugiere SL al 25% del recorrido (protege mitad de ganancia)\n"
+        "  Ej: Entry 214.61 TP 215.25 -> SL sugerido: 214.77 (protege +25%)\n\n"
+        "Al 70% del TP: sugiere SL al 50% del recorrido o cerrar\n"
+        "  Ej: Entry 214.61 TP 215.25 -> SL sugerido: 214.93 (protege +50%)\n\n"
+        "Los flags se persisten al disco para que no se reenvien tras redeploy.\n"
+        "Las alertas son informativas. El usuario decide si actuar."
+    )
+
+    pdf.subtitle("17.7 PnL en EUR en Tiempo Real")
+    pdf.body_text(
+        "Operaciones activas muestran PnL en euros en tiempo real.\n\n"
+        "Backend: _enrich_pnl_live() calcula pnl_usd y pnl_eur usando get_price() "
+        "y tipo de cambio EURUSD. Fallback a current_price si get_price() falla.\n\n"
+        "App: Si el servidor devuelve pnl_eur=0, calcula localmente con "
+        "priceDiff * lote / 1.08. Usa estado.precio (cada 5s) para precio live.\n\n"
+        "SignalPanel con PnL live se muestra en Dashboard debajo del precio."
+    )
+
+    pdf.subtitle("17.8 Calculo de Lotes Corregido (Contract Sizes MT4)")
+    pdf.body_text(
+        "risk_engine.py reescrito con soporte correcto por tipo de activo:\n\n"
+        "Contract sizes MT4/MT5:\n"
+        "- Forex: 1 lot = 100,000 unidades\n"
+        "- XAU (oro): 1 lot = 100 oz\n"
+        "- XAG (plata): 1 lot = 5,000 oz\n"
+        "- XPT/XPD: 1 lot = 1 oz\n"
+        "- Oil: 1 lot = 1,000 barriles\n"
+        "- Crypto: 1 lot = 1 unidad\n\n"
+        "ANTES: XAGUSD usaba formula de forex (pip=0.0001), lotes enormes.\n"
+        "AHORA: Cada metal/commodity tiene su bloque con contract size correcto.\n"
+        "App muestra lote_std (0.01, 0.10, etc.) en vez de unidades raw."
+    )
+
+    pdf.subtitle("17.9 Tech Summary (Gauges estilo Investing.com)")
+    pdf.body_text(
+        "Widgets velocimetro en Dashboard con 3 gauges:\n"
+        "- Medias Moviles: 9 MAs (EMA9/20/35/50/200, SMA20, Ichimoku, ST, VWAP)\n"
+        "- Indicadores: 10 osciladores (RSI, Stoch, MACD, ADX, Williams, CCI, etc.)\n"
+        "- Resumen General: combinacion de ambos\n\n"
+        "Labels en castellano: Compra Fuerte, Compra, Neutral, Venta, Venta Fuerte.\n"
+        "Criterios alineados con Investing.com (>= 65% buy = Strong Buy).\n\n"
+        "Multi-temporalidad expandible: 15m, 30m, 1H, 4H, Diario."
+    )
+
+    pdf.subtitle("17.10 Reorganizacion del Dashboard")
+    pdf.body_text(
+        "Orden: Precio -> Senal activa (PnL live) -> Gauges tecnicos -> Consensus -> "
+        "Motores -> Regimen -> Order Flow -> MTF -> Indicadores.\n\n"
+        "Movidos a Config: Sesion, Estadisticas, Heatmap de divisas."
+    )
+
+    pdf.subtitle("17.11 Notificaciones Corregidas")
+    pdf.body_text(
+        "Bugs corregidos:\n"
+        "- Telegram alertas: send_message() no existia -> send_custom()\n"
+        "- WhatsApp alertas: no se enviaban -> anadido send_custom()\n"
+        "- except:pass -> logging de errores\n"
+        "- Flags persistidos al disco para no reenviar tras redeploy"
+    )
+
+    pdf.subtitle("17.12 Commits del Modelo B v4")
+    pdf.body_text("Historial de commits de esta actualizacion:")
+    pdf.bullet("cf6db82 - Fix critico: consenso estricto 2/2 + riesgo fijo 1%")
+    pdf.bullet("27514bb - Riesgo decidido por consenso de Groq+Gemini")
+    pdf.bullet("a7e56aa - PnL en EUR en tiempo real")
+    pdf.bullet("2e97aa6 - Fix: IA no opera contra tendencia + PnL EUR en API")
+    pdf.bullet("316c1b9 - Tech summary gauges")
+    pdf.bullet("75fe419 - Tech summary multi-timeframe")
+    pdf.bullet("2a702e0 - Fix tech_summary: criterios Investing.com")
+    pdf.bullet("4a380ad - IA libre: prompts neutros + consenso 2/2")
+    pdf.bullet("ead9e2b - Fix PnL live: fallback current_price")
+    pdf.bullet("e850456 - Fix lotes + PnL real + quitar trailing + estocastico")
+    pdf.bullet("1e1e594 - Fix alertas: enviar a Telegram + WhatsApp")
+    pdf.bullet("0d15b3f - Alertas con SL sugerido inteligente")
+    pdf.bullet("1f58c1a - Persistir flags 50%/70% para no reenviar tras redeploy")
 
     # Output
     buf = io.BytesIO()
