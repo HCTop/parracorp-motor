@@ -173,48 +173,8 @@ def check_prices(symbol, current_price):
             sl = sig["sl"]
             tp = sig["tp"]
             action = sig["action"]
-            # === Alerta Partial Close (50% TP) ===
-            # Notificar al usuario cuando el precio alcanza el 50% del TP
-            # para que pueda mover SL a breakeven manualmente
-            if not sig.get("_notified_50pct", False):
-                tp_dist = abs(tp - entry)
-                if action == "BUY":
-                    progress = (current_price - entry) / tp_dist if tp_dist > 0 else 0
-                else:
-                    progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
-                if progress >= 0.5:
-                    sig["_notified_50pct"] = True
-                    _save()  # Persistir flag para que no reenvie tras redeploy
-                    # SL sugerido: al 25% del camino a TP (protege mitad de lo ganado)
-                    if action == "BUY":
-                        suggested_sl = entry + tp_dist * 0.25
-                    else:
-                        suggested_sl = entry - tp_dist * 0.25
-                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó {progress*100:.0f}% TP - SL sugerido: {suggested_sl:.5f}")
-                    _msg_50 = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
-                              f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
-                              f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                              f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")
-                    try:
-                        from push import send as _push_send
-                        token = state.get("push_token", "")
-                        if token:
-                            _push_send(token, f"50% TP {symbol} {action}", _msg_50, signal_type="alert")
-                    except Exception as e:
-                        mlog("PUSH", f"Error 50% push: {e}")
-                    try:
-                        from telegram_bot import send_custom as _tg_send
-                        _tg_send(_msg_50)
-                    except Exception as e:
-                        mlog("TG", f"Error 50% telegram: {e}")
-                    try:
-                        import whatsapp_bot as _wa
-                        _wa.send_custom(_msg_50)
-                    except Exception as e:
-                        mlog("WA", f"Error 50% whatsapp: {e}")
-
-            # === Alerta 70% TP (trailing tight) ===
-            if not sig.get("_notified_70pct", False) and sig.get("_notified_50pct", False):
+            # === Alerta 70% TP (proteger beneficio) ===
+            if not sig.get("_notified_70pct", False):
                 tp_dist = abs(tp - entry)
                 if action == "BUY":
                     progress = (current_price - entry) / tp_dist if tp_dist > 0 else 0
