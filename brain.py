@@ -687,28 +687,24 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 {stats_text}
 
 === REGLA PRINCIPAL: OPERA A FAVOR DE LA TENDENCIA ===
-NUNCA operes contra la tendencia dominante. Si las EMAs estan alineadas bajistas y ADX>20, solo SELL o WAIT. Si las EMAs estan alineadas alcistas y ADX>20, solo BUY o WAIT.
-RSI sobrevendido (<30) en tendencia bajista fuerte NO es señal de compra, es confirmacion de fuerza bajista.
-RSI sobrecomprado (>70) en tendencia alcista fuerte NO es señal de venta, es confirmacion de fuerza alcista.
-Solo interpreta RSI como señal contraria cuando ADX<20 (mercado lateral).
+Opera a favor de la tendencia dominante. Si EMAs bajistas y ADX>20, opera SELL. Si EMAs alcistas y ADX>20, opera BUY.
+RSI sobrevendido en tendencia bajista fuerte = confirmacion bajista, no señal de compra.
+En mercado lateral (ADX<20), puedes usar RSI extremo como señal contraria.
 
 === COMO DECIDIR ===
-OPERA (BUY/SELL) solo si TODO confluye:
-- Tendencia definida (EMAs alineadas + ADX>20) y operas A FAVOR
-- MACD confirma la direccion de la tendencia
-- Estructura favorable (no contra S/R fuerte)
-- Volumen apoyando (vol_ratio > 0.8)
+OPERA (BUY/SELL) cuando haya confluencia:
+- Tendencia definida (al menos 3 EMAs alineadas o ADX>20) A FAVOR
+- MACD confirma la direccion
+- No operes contra S/R fuerte cercano
 
-WAIT si:
-- Indicadores contradictorios (quieres BUY pero EMAs bajistas, etc.)
-- ADX < 15 (sin fuerza, mercado muerto)
-- Precio atrapado entre S/R sin direccion
-- Divergencia contra la direccion propuesta
-- Cualquier duda razonable
+WAIT solo si:
+- Indicadores claramente contradictorios entre si
+- ADX < 15 y sin estructura clara
+- Contradiccion directa entre tendencia y momentum
 
-Prefiere NO operar a operar mal. Una operacion evitada no pierde dinero.
+Busca oportunidades activamente. Si hay tendencia clara, opera. No necesitas que TODO sea perfecto.
 
-SL: entre 1.0 y 3.0 ATR | TP: entre 2.0 y 5.0 ATR | R:R minimo 1.5:1
+SL: entre 1.0 y 2.5 ATR | TP: entre 1.5 y 4.0 ATR | R:R minimo 1.3:1
 Trailing: "none", "breakeven" (si momentum medio), "atr1" (si ADX>30)
 
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","analysis":"1 frase"}}
@@ -876,28 +872,24 @@ Sentimiento: {news.get('sentiment','neutral')}
 {stats_text}
 
 === REGLA PRINCIPAL: OPERA A FAVOR DE LA TENDENCIA ===
-NUNCA operes contra la tendencia dominante. Si las EMAs estan alineadas bajistas y ADX>20, solo SELL o WAIT. Si las EMAs estan alineadas alcistas y ADX>20, solo BUY o WAIT.
-RSI sobrevendido (<30) en tendencia bajista fuerte NO es señal de compra, es confirmacion de fuerza bajista.
-RSI sobrecomprado (>70) en tendencia alcista fuerte NO es señal de venta, es confirmacion de fuerza alcista.
-Solo interpreta RSI como señal contraria cuando ADX<20 (mercado lateral).
+Opera a favor de la tendencia dominante. Si EMAs bajistas y ADX>20, opera SELL. Si EMAs alcistas y ADX>20, opera BUY.
+RSI sobrevendido en tendencia bajista fuerte = confirmacion bajista, no señal de compra.
+En mercado lateral (ADX<20), puedes usar RSI extremo como señal contraria.
 
 === COMO DECIDIR ===
-OPERA (BUY/SELL) solo si TODO confluye:
-- Tendencia definida (EMAs alineadas + ADX>20) y operas A FAVOR
-- MACD confirma la direccion de la tendencia
-- Estructura favorable (no contra S/R fuerte)
-- Noticias no contradicen la direccion
+OPERA (BUY/SELL) cuando haya confluencia:
+- Tendencia definida (al menos 3 EMAs alineadas o ADX>20) A FAVOR
+- MACD confirma la direccion
+- Noticias no contradicen fuertemente
 
-WAIT si:
-- Indicadores contradictorios (quieres BUY pero EMAs bajistas, etc.)
-- ADX < 15 (sin fuerza, mercado muerto)
-- Noticias fuertes contra la direccion
-- Divergencia contra la direccion propuesta
-- Cualquier duda razonable
+WAIT solo si:
+- Indicadores claramente contradictorios entre si
+- ADX < 15 y sin estructura clara
+- Noticias de alto impacto directamente contra la direccion
 
-Prefiere NO operar a operar mal. Una operacion evitada no pierde dinero.
+Busca oportunidades activamente. Si hay tendencia clara, opera. No necesitas que TODO sea perfecto.
 
-SL: entre 1.0 y 3.0 ATR | TP: entre 2.0 y 5.0 ATR | R:R minimo 1.5:1
+SL: entre 1.0 y 2.5 ATR | TP: entre 1.5 y 4.0 ATR | R:R minimo 1.3:1
 Trailing: "none", "breakeven" (si momentum medio), "atr1" (si ADX>30)
 
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","reason":"1 frase"}}"""
@@ -1057,11 +1049,11 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
 
     Groq + Gemini votan en paralelo. Stats es solo contexto informativo.
 
-    Reglas (estricto 2/2):
+    Reglas:
     - Ambas fallan (None)         -> WAIT (sin datos no se opera)
-    - 1 falla (None)              -> WAIT (necesitamos 2 opiniones)
+    - 1 falla (None)              -> WAIT (necesitamos al menos 1 IA)
     - 2/2 coinciden BUY/SELL      -> EMITE con media de confianzas
-    - 1 BUY/SELL + 1 WAIT         -> WAIT (necesitamos ambas de acuerdo)
+    - 1 BUY/SELL + 1 WAIT         -> EMITE con confianza reducida (-10)
     - Se contradicen (BUY vs SELL)-> WAIT
     - 2/2 WAIT                    -> WAIT
     """
@@ -1118,18 +1110,18 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
         consensus_str = f"2/2 [{v_groq}]"
         log("BRAIN", f"CONSENSUS 2/2: {v_groq} (Groq:{c_groq}% Gemini:{c_gemini}% -> {final_confidence}%)")
 
-    # Caso 2: una dice BUY/SELL, otra dice WAIT -> NO operar (necesitamos 2/2)
+    # Caso 2: una dice BUY/SELL, otra dice WAIT -> operar con confianza reducida
     elif v_groq in ("BUY", "SELL") and v_gemini == "WAIT":
-        final_action = "WAIT"
-        final_confidence = 0
-        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT] -> WAIT (requiere 2/2)"
-        log("BRAIN", f"CONSENSUS 1/2: Groq={v_groq} pero Gemini=WAIT -> NO OPERAR (requiere 2/2)")
+        final_action = v_groq
+        final_confidence = max(c_groq - 10, 50)
+        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT]"
+        log("BRAIN", f"CONSENSUS 1/2: {v_groq} (Groq decide, Gemini neutral, conf {final_confidence}%)")
 
     elif v_gemini in ("BUY", "SELL") and v_groq == "WAIT":
-        final_action = "WAIT"
-        final_confidence = 0
-        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}] -> WAIT (requiere 2/2)"
-        log("BRAIN", f"CONSENSUS 1/2: Gemini={v_gemini} pero Groq=WAIT -> NO OPERAR (requiere 2/2)")
+        final_action = v_gemini
+        final_confidence = max(c_gemini - 10, 50)
+        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}]"
+        log("BRAIN", f"CONSENSUS 1/2: {v_gemini} (Gemini decide, Groq neutral, conf {final_confidence}%)")
 
     # Caso 3: se contradicen (BUY vs SELL)
     elif {v_groq, v_gemini} == {"BUY", "SELL"}:
