@@ -1698,6 +1698,53 @@ def wa_status():
         return jsonify({"connected": False})
 
 
+@app.route("/test/alert", methods=["POST"])
+def test_alert():
+    """Envia alerta de prueba 50%/70% TP a push, Telegram y WhatsApp."""
+    try:
+        level = request.json.get("level", "50") if request.is_json else "50"
+        symbol = "XAGUSD"
+        action = "SELL"
+        entry = 32.50
+        tp = 31.80
+        current = 32.15 if level == "50" else 31.99
+        progress = abs(entry - current) / abs(tp - entry) * 100
+
+        msg = (f"{'⚠️' if level == '50' else '🔥'} {level}% TP alcanzado {symbol} {action}\n"
+               f"Precio: {current:.5f} ({progress:.0f}%)\n"
+               f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+               f"👉 {'Mover SL a breakeven' if level == '50' else 'Considerar cerrar parcial'}")
+
+        results = {}
+        try:
+            from push import send as _push_send
+            token = cfg.state.get("push_token", "")
+            if token:
+                _push_send(token, f"{level}% TP {symbol} TEST", msg, signal_type="alert")
+                results["push"] = "sent"
+            else:
+                results["push"] = "no token"
+        except Exception as e:
+            results["push"] = str(e)
+
+        try:
+            from telegram_bot import send_custom as _tg_send
+            _tg_send(msg)
+            results["telegram"] = "sent"
+        except Exception as e:
+            results["telegram"] = str(e)
+
+        try:
+            wa.send_custom(msg)
+            results["whatsapp"] = "sent"
+        except Exception as e:
+            results["whatsapp"] = str(e)
+
+        return jsonify({"ok": True, "message": msg, "results": results})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # === Test Brain (force IA pipeline) ===
 
 @app.route("/test/brain", methods=["POST"])
