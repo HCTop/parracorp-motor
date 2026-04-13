@@ -1273,7 +1273,7 @@ def _build_estado(sym, tf):
 
 def _enrich_pnl_live(signals_list):
     """Enriquece señales activas con pnl_usd y pnl_eur en tiempo real."""
-    from risk_engine import pnl_usd
+    from risk_engine import pnl_usd as calc_pnl_usd
     eurusd = get_price("EURUSD") or 1.08
     for sig in signals_list:
         if sig.get("status") != "ACTIVE":
@@ -1281,15 +1281,25 @@ def _enrich_pnl_live(signals_list):
         try:
             p = get_price(sig["symbol"])
             if not p or p <= 0:
+                # Fallback: usar current_price de la señal si existe
+                p = sig.get("current_price", 0)
+            if not p or p <= 0:
                 continue
             sig["current_price"] = p
-            entry = sig["entry_price"]
-            action = sig["action"]
+            entry = sig.get("entry_price", 0)
+            if not entry or entry <= 0:
+                continue
+            action = sig.get("action", "BUY")
             lote = sig.get("lote", 0)
-            sig["pnl_usd"] = pnl_usd(entry, p, lote, sig["symbol"], action)
+            if lote > 0:
+                sig["pnl_usd"] = calc_pnl_usd(entry, p, lote, sig["symbol"], action)
+            else:
+                # Sin lote: calcular pnl_pct al menos
+                diff = (p - entry) if action.upper() == "BUY" else (entry - p)
+                sig["pnl_usd"] = round(diff * 100000, 2)  # aprox para forex
             sig["pnl_eur"] = round(sig["pnl_usd"] / eurusd, 2) if eurusd > 0 else sig["pnl_usd"]
-        except Exception:
-            pass
+        except Exception as e:
+            mlog("PNL", f"Error enrich {sig.get('symbol','?')}: {e}")
     return signals_list
 
 
