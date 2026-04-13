@@ -173,35 +173,6 @@ def check_prices(symbol, current_price):
             sl = sig["sl"]
             tp = sig["tp"]
             action = sig["action"]
-            trailing = sig.get("trailing_stop", "none")
-
-            # === Trailing Stop Execution ===
-            if trailing == "breakeven":
-                # Mover SL a entry cuando el precio avanza >= 50% del camino a TP
-                halfway = entry + (tp - entry) * 0.5 if action == "BUY" else entry - (entry - tp) * 0.5
-                if action == "BUY" and current_price >= halfway and sl < entry:
-                    sig["sl"] = entry
-                    sl = entry
-                    mlog("TRAILING", f"{sig['id']} {symbol} SL -> breakeven {entry:.5f}")
-                elif action == "SELL" and current_price <= halfway and sl > entry:
-                    sig["sl"] = entry
-                    sl = entry
-                    mlog("TRAILING", f"{sig['id']} {symbol} SL -> breakeven {entry:.5f}")
-            elif trailing == "atr1":
-                # Trailing ATR: mover SL siguiendo el precio a distancia de 1 ATR
-                atr = sig.get("atr", 0)
-                if atr > 0:
-                    if action == "BUY":
-                        new_sl = current_price - atr
-                        if new_sl > sl:
-                            sig["sl"] = round(new_sl, 6)
-                            sl = sig["sl"]
-                    elif action == "SELL":
-                        new_sl = current_price + atr
-                        if new_sl < sl:
-                            sig["sl"] = round(new_sl, 6)
-                            sl = sig["sl"]
-
             # === Alerta Partial Close (50% TP) ===
             # Notificar al usuario cuando el precio alcanza el 50% del TP
             # para que pueda mover SL a breakeven manualmente

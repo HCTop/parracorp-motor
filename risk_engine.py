@@ -5,16 +5,58 @@ ParraCorp v3.1
 
 Position sizing, SL/TP por ATR+regimen, ajuste por regimen transition.
 Sin broker - solo calcula tamanos de posicion para la senal.
+
+Tamaños de contrato MT4/MT5:
+- Forex: 1 lot = 100,000 unidades
+- XAU (oro): 1 lot = 100 oz
+- XAG (plata): 1 lot = 5,000 oz
+- Indices: 1 lot = 1 contrato (pip_value varía)
+- Crypto: 1 lot = 1 unidad
+- Oil: 1 lot = 1,000 barriles
 """
 from config import log as mlog, JPY, METAL, INDEX, CRYPTO, COMMODITY
 
 MIN_PROFIT_USD = 1.0
 _USD_BASE = {"USDJPY", "USDCHF", "USDCAD"}
 
+# Contract sizes por tipo (MT4/MT5 standard)
+_CONTRACT = {
+    "XAU": 100,       # 1 lot = 100 oz
+    "XAG": 5000,      # 1 lot = 5000 oz
+    "XPT": 1,         # 1 lot = 1 oz (platino)
+    "XPD": 1,         # 1 lot = 1 oz (paladio)
+    "FOREX": 100000,  # 1 lot = 100,000 unidades
+    "CRYPTO": 1,      # 1 lot = 1 unidad
+    "OIL": 1000,      # 1 lot = 1000 barriles
+}
+
+
+def _get_contract_size(sym):
+    """Devuelve contract size y tipo para un símbolo."""
+    if sym.startswith("XAU"):
+        return _CONTRACT["XAU"], "metal"
+    if sym.startswith("XAG"):
+        return _CONTRACT["XAG"], "metal"
+    if sym.startswith("XPT"):
+        return _CONTRACT["XPT"], "metal"
+    if sym.startswith("XPD"):
+        return _CONTRACT["XPD"], "metal"
+    if sym in CRYPTO or sym.endswith("USDT") or sym.endswith("USD") and any(
+        c in sym for c in ["BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE",
+                           "AVAX", "DOT", "LINK", "MATIC", "LTC", "UNI",
+                           "XLM", "ATOM", "NEAR", "FIL", "APT", "ARB", "OP"]):
+        return _CONTRACT["CRYPTO"], "crypto"
+    if any(x in sym for x in ["OIL", "BRENT", "WTI"]):
+        return _CONTRACT["OIL"], "commodity"
+    if sym in INDEX or any(x in sym for x in ["US30", "NAS", "SPX", "DE40", "UK100"]):
+        return 1, "index"
+    return _CONTRACT["FOREX"], "forex"
+
 
 def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
     """
     Calcula tamano de posicion basado en riesgo.
+    Devuelve lote_std (lotes estándar MT4) como campo principal.
     """
     result = {
         "lote": 0, "unidades": 0, "lote_std": 0.0,
@@ -28,13 +70,24 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
         return result
 
     sym = simbolo.upper().replace("/", "")
-    is_jpy = sym in JPY
-    pip = 0.01 if is_jpy else 0.0001
+    contract_size, tipo = _get_contract_size(sym)
 
     sl_dist = abs(precio - sl)
-    sl_pips = sl_dist / pip
+    if sl_dist <= 0:
+        result["rejected"] = True
+        result["reject_reason"] = "SL = Precio"
+        return result
 
-    if sl_pips < 3:
+    # Validar SL minimo en pips
+    is_jpy = sym in JPY
+    pip = 0.01 if is_jpy else 0.0001
+    if tipo == "metal":
+        pip = 0.01  # Metales usan 0.01 como pip
+    elif tipo in ("crypto", "index", "commodity"):
+        pip = 0.01
+
+    sl_pips = sl_dist / pip
+    if sl_pips < 3 and tipo == "forex":
         result["rejected"] = True
         result["reject_reason"] = f"SL muy ajustado ({sl_pips:.0f} pips)"
         return result
@@ -42,29 +95,46 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
     riesgo_usd = capital * (riesgo_pct / 100)
     result["riesgo_usd"] = round(riesgo_usd, 2)
 
-    if sym.startswith("XAU"):
-        # XAU: 1 lote std = 100 oz, pip = $0.01, pip_value = $0.01/oz
-        # P&L = diff_precio * unidades_oz
-        # unidades_oz = riesgo_usd / sl_dist (porque $1 movimiento = $1/oz)
-        unidades = riesgo_usd / sl_dist if sl_dist > 0 else 0
-        result["unidades"] = round(max(unidades, 0.01), 2)
-        result["lote"] = result["unidades"]
-        result["lote_std"] = round(result["unidades"] / 100, 2)
-    elif sym in CRYPTO or sym.endswith("USDT"):
-        unidades = riesgo_usd / sl_dist if sl_dist > 0 else 0
+    if tipo == "metal":
+        # Metales: PnL = diff * unidades_oz
+        # unidades_oz = riesgo_usd / sl_dist
+        unidades = riesgo_usd / sl_dist
+        lote_std = unidades / contract_size
+        result["unidades"] = round(unidades, 2)
+        result["lote_std"] = round(lote_std, 2)
+        result["lote"] = result["unidades"]  # unidades para calculo interno
+
+    elif tipo == "crypto":
+        # Crypto: PnL = diff * unidades
+        unidades = riesgo_usd / sl_dist
         result["unidades"] = round(unidades, 4)
+        result["lote_std"] = result["unidades"]  # 1 lot = 1 unidad
         result["lote"] = result["unidades"]
-        result["lote_std"] = result["unidades"]
+
     elif sym in _USD_BASE:
-        unidades = riesgo_usd / (sl_pips * pip * precio) if (sl_pips * pip * precio) > 0 else 0
+        # USD como base: pip_value = pip / precio * contract_size
+        pip_value_per_lot = (pip / precio) * contract_size if precio > 0 else 0
+        if pip_value_per_lot > 0 and sl_pips > 0:
+            lote_std = riesgo_usd / (sl_pips * pip_value_per_lot)
+        else:
+            lote_std = 0
+        unidades = lote_std * contract_size
         result["unidades"] = max(1, round(unidades))
+        result["lote_std"] = round(lote_std, 2)
         result["lote"] = result["unidades"]
-        result["lote_std"] = round(result["unidades"] / 100000, 4)
+
     else:
-        unidades = riesgo_usd / (sl_pips * pip) if (sl_pips * pip) > 0 else 0
+        # Forex estándar (XXX/USD): pip_value = pip * contract_size = $10/lot
+        # Indices/Commodity: PnL = diff * contract_size * lots
+        pip_value_per_lot = pip * contract_size
+        if pip_value_per_lot > 0 and sl_pips > 0:
+            lote_std = riesgo_usd / (sl_pips * pip_value_per_lot)
+        else:
+            lote_std = 0
+        unidades = lote_std * contract_size
         result["unidades"] = max(1, round(unidades))
+        result["lote_std"] = round(lote_std, 2)
         result["lote"] = result["unidades"]
-        result["lote_std"] = round(result["unidades"] / 100000, 4)
 
     if tp and sl_dist > 0:
         tp_dist = abs(precio - tp)
@@ -96,7 +166,7 @@ def validar_senal(action, precio, sl, tp, simbolo):
     sl_pct = abs(precio - sl) / precio * 100
     if sym in CRYPTO or sym.endswith("USDT"):
         min_sl = 0.15
-    elif "XAU" in sym:
+    elif "XAU" in sym or "XAG" in sym:
         min_sl = 0.10
     else:
         min_sl = 0.05
@@ -126,7 +196,10 @@ def ajustar_riesgo_por_regimen(riesgo_base, regimen_info):
 
 
 def pnl_usd(entrada, salida, lote, simbolo, action):
-    """Calcula P&L en USD."""
+    """
+    Calcula P&L en USD.
+    lote = unidades (no lotes std). Para forex lote=100000 = 1 lot std.
+    """
     sym = simbolo.upper().replace("/", "")
 
     if action.upper() == "BUY":
@@ -135,8 +208,10 @@ def pnl_usd(entrada, salida, lote, simbolo, action):
         diff = entrada - salida
 
     if sym in _USD_BASE:
+        # USD como base: PnL = diff * unidades / precio_salida
         pnl = diff * lote / salida if salida else 0
     else:
+        # Todo lo demas: PnL = diff * unidades
         pnl = diff * lote
 
     return round(pnl, 2)

@@ -482,6 +482,9 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
     vol_ratio = snapshot.get("vol_ratio", 1.0)
     zscore = snapshot.get("zscore_h1", 0)
     stoch_k = snapshot.get("stoch_k", 50)
+    stoch_d = snapshot.get("stoch_d", 50)
+    cci = snapshot.get("cci", 0)
+    williams_r = snapshot.get("williams_r", -50)
     direction = engines_result.get("direccion", "NEUTRAL")
     tqs = engines_result.get("trade_quality_score", 0)
     regimen = engines_result.get("regimen", "NORMAL")
@@ -556,15 +559,30 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
         lines.append(f"Volumen bajo ({vol_ratio:.1f}x) - señales menos fiables")
 
     # Z-Score
-    if abs(zscore) > 2.0:
+    if abs(zscore) > 1.0:
         dir_z = "por encima de la media" if zscore > 0 else "por debajo de la media"
-        lines.append(f"Z-Score={zscore:.1f}: {dir_z} (ADX={adx:.0f})")
+        lines.append(f"Z-Score={zscore:.1f}: {dir_z}")
 
-    # Stoch
+    # Stoch (siempre, con K y D)
+    stoch_zone = ""
     if stoch_k > 80:
-        lines.append(f"Estocastico={stoch_k:.0f} (zona alta)")
+        stoch_zone = " [SOBRECOMPRA]"
     elif stoch_k < 20:
-        lines.append(f"Estocastico={stoch_k:.0f} (zona baja)")
+        stoch_zone = " [SOBREVENTA]"
+    stoch_cross = ""
+    if stoch_k > stoch_d:
+        stoch_cross = " K>D (alcista)"
+    elif stoch_k < stoch_d:
+        stoch_cross = " K<D (bajista)"
+    lines.append(f"Estocastico K={stoch_k:.0f} D={stoch_d:.0f}{stoch_zone}{stoch_cross}")
+
+    # CCI y Williams %R
+    cci_zone = ""
+    if cci > 100:
+        cci_zone = " [SOBRECOMPRA]"
+    elif cci < -100:
+        cci_zone = " [SOBREVENTA]"
+    lines.append(f"CCI={cci:.0f}{cci_zone} | Williams %R={williams_r:.0f}")
 
     # Motores
     mom = engines_result.get("momentum_score", 0)
@@ -679,9 +697,7 @@ Parametros de respuesta:
 - sl_atr: multiplo de ATR para stop loss (rango tipico 1.0-3.0)
 - tp_atr: multiplo de ATR para take profit (rango tipico 1.5-5.0)
 - risk_pct: porcentaje del capital a arriesgar (0.5-2.0)
-- trailing_stop: "none", "breakeven" o "atr1"
-
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","analysis":"1 frase"}}
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     result = _call_groq(prompt, max_tokens=300)
@@ -700,7 +716,7 @@ JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"r
         "sl_atr": float(result.get("sl_atr", 1.5)),
         "tp_atr": float(result.get("tp_atr", 3.0)),
         "risk_pct": float(result.get("risk_pct", 1.0)),
-        "trailing_stop": result.get("trailing_stop", "none"),
+        "trailing_stop": "none",
     }
 
 
@@ -853,9 +869,7 @@ Parametros de respuesta:
 - sl_atr: multiplo de ATR para stop loss (rango tipico 1.0-3.0)
 - tp_atr: multiplo de ATR para take profit (rango tipico 1.5-5.0)
 - risk_pct: porcentaje del capital a arriesgar (0.5-2.0)
-- trailing_stop: "none", "breakeven" o "atr1"
-
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"trailing_stop":"none","reason":"1 frase"}}"""
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"reason":"1 frase"}}"""
 
     log("GEMINI", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     result = _call_gemini(prompt, max_tokens=300)
@@ -874,7 +888,7 @@ JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"r
         "sl_atr": float(result.get("sl_atr", 1.5)),
         "tp_atr": float(result.get("tp_atr", 3.0)),
         "risk_pct": float(result.get("risk_pct", 1.0)),
-        "trailing_stop": result.get("trailing_stop", "none"),
+        "trailing_stop": "none",
     }
 
 
