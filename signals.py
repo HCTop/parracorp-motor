@@ -12,6 +12,24 @@ import time
 import threading
 from config import data_path, log as mlog, state
 
+def _send_alert(sig, symbol, title, msg):
+    """Envia alerta a push + telegram + whatsapp."""
+    try:
+        from bot import _push_send
+        _push_send(title, msg)
+    except Exception as e:
+        mlog("ALERT", f"Push error {symbol}: {e}")
+    try:
+        import telegram_bot
+        telegram_bot.send_custom(msg)
+    except Exception as e:
+        mlog("ALERT", f"Telegram error {symbol}: {e}")
+    try:
+        import whatsapp_bot
+        whatsapp_bot.send_custom(msg)
+    except Exception as e:
+        mlog("ALERT", f"WhatsApp error {symbol}: {e}")
+
 SIGNALS_FILE = data_path("signals_v3.json")
 HISTORY_FILE = data_path("history_v3.json")
 TRADES_JSONL = data_path("trades.jsonl")
@@ -173,43 +191,43 @@ def check_prices(symbol, current_price):
             sl = sig["sl"]
             tp = sig["tp"]
             action = sig["action"]
-            # === Alerta 70% TP (proteger beneficio) ===
-            if not sig.get("_notified_70pct", False):
-                tp_dist = abs(tp - entry)
+            # === Alertas TP: 50% y 70% ===
+            tp_dist = abs(tp - entry)
+            if tp_dist > 0:
                 if action == "BUY":
-                    progress = (current_price - entry) / tp_dist if tp_dist > 0 else 0
+                    progress = (current_price - entry) / tp_dist
                 else:
-                    progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
-                if progress >= 0.7:
+                    progress = (entry - current_price) / tp_dist
+
+                # Si salta directo al 70%+, solo mandar la del 70% (no ambas)
+                if progress >= 0.7 and not sig.get("_notified_70pct", False):
                     sig["_notified_70pct"] = True
-                    _save()  # Persistir flag para que no reenvie tras redeploy
-                    # SL sugerido: al 50% del camino a TP (protege la mayor parte)
+                    sig["_notified_50pct"] = True  # marcar 50% tambien para que no salte despues
+                    _save()
                     if action == "BUY":
                         suggested_sl = entry + tp_dist * 0.50
                     else:
                         suggested_sl = entry - tp_dist * 0.50
-                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó {progress*100:.0f}% TP - SL sugerido: {suggested_sl:.5f}")
-                    _msg_70 = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
-                               f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
-                               f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                               f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
-                    try:
-                        from push import send as _push_send
-                        token = state.get("push_token", "")
-                        if token:
-                            _push_send(token, f"70% TP {symbol} {action}", _msg_70, signal_type="alert")
-                    except Exception as e:
-                        mlog("PUSH", f"Error 70% push: {e}")
-                    try:
-                        from telegram_bot import send_custom as _tg_send
-                        _tg_send(_msg_70)
-                    except Exception as e:
-                        mlog("TG", f"Error 70% telegram: {e}")
-                    try:
-                        import whatsapp_bot as _wa
-                        _wa.send_custom(_msg_70)
-                    except Exception as e:
-                        mlog("WA", f"Error 70% whatsapp: {e}")
+                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                    _msg = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
+                            f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                            f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                            f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
+                    _send_alert(sig, symbol, f"70% TP {symbol} {action}", _msg)
+
+                elif progress >= 0.5 and not sig.get("_notified_50pct", False):
+                    sig["_notified_50pct"] = True
+                    _save()
+                    if action == "BUY":
+                        suggested_sl = entry + tp_dist * 0.25
+                    else:
+                        suggested_sl = entry - tp_dist * 0.25
+                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                    _msg = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
+                            f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                            f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                            f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")
+                    _send_alert(sig, symbol, f"50% TP {symbol} {action}", _msg)
 
             hit = None
             if action == "BUY":
@@ -223,12 +241,7 @@ def check_prices(symbol, current_price):
                 elif current_price <= tp:
                     hit = "HIT_TP"
 
-            # Trailing close: SL hit pero en profit gracias al trailing
-            if hit == "HIT_SL" and trailing != "none":
-                if action == "BUY" and current_price > entry:
-                    hit = "TRAILING_CLOSE"
-                elif action == "SELL" and current_price < entry:
-                    hit = "TRAILING_CLOSE"
+            # Trailing eliminado - ya no se usa
 
             if hit:
                 sig["status"] = hit
@@ -281,7 +294,7 @@ def check_prices(symbol, current_price):
                     "exit": round(current_price, 6),
                     "sl_final": sig["sl"],   # SL al cierre (puede haberse movido por trailing)
                     "tp": sig["tp"],
-                    "trailing_stop": trailing,
+                    "trailing_stop": "none",
                     "pnl_pct": sig["pnl_pct"],
                     "pnl_usd": sig["pnl_usd"],
                     "duration_s": duration_s,
