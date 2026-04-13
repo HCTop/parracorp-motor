@@ -184,6 +184,7 @@ def check_prices(symbol, current_price):
                     progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
                 if progress >= 0.5:
                     sig["_notified_50pct"] = True
+                    _save()  # Persistir flag para que no reenvie tras redeploy
                     # SL sugerido: al 25% del camino a TP (protege mitad de lo ganado)
                     if action == "BUY":
                         suggested_sl = entry + tp_dist * 0.25
@@ -221,6 +222,7 @@ def check_prices(symbol, current_price):
                     progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
                 if progress >= 0.7:
                     sig["_notified_70pct"] = True
+                    _save()  # Persistir flag para que no reenvie tras redeploy
                     # SL sugerido: al 50% del camino a TP (protege la mayor parte)
                     if action == "BUY":
                         suggested_sl = entry + tp_dist * 0.50
