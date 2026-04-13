@@ -184,11 +184,16 @@ def check_prices(symbol, current_price):
                     progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
                 if progress >= 0.5:
                     sig["_notified_50pct"] = True
-                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 50% TP ({progress*100:.0f}%) - Mover SL a BE")
-                    _msg_50 = (f"⚠️ 50% TP alcanzado {symbol} {action}\n"
+                    # SL sugerido: al 25% del camino a TP (protege mitad de lo ganado)
+                    if action == "BUY":
+                        suggested_sl = entry + tp_dist * 0.25
+                    else:
+                        suggested_sl = entry - tp_dist * 0.25
+                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó {progress*100:.0f}% TP - SL sugerido: {suggested_sl:.5f}")
+                    _msg_50 = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
                               f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                               f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                              f"👉 Mover SL a breakeven ({entry:.5f})")
+                              f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")
                     try:
                         from push import send as _push_send
                         token = state.get("push_token", "")
@@ -216,11 +221,16 @@ def check_prices(symbol, current_price):
                     progress = (entry - current_price) / tp_dist if tp_dist > 0 else 0
                 if progress >= 0.7:
                     sig["_notified_70pct"] = True
-                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 70% TP - Considerar cerrar parcial")
-                    _msg_70 = (f"🔥 70% TP alcanzado {symbol} {action}\n"
+                    # SL sugerido: al 50% del camino a TP (protege la mayor parte)
+                    if action == "BUY":
+                        suggested_sl = entry + tp_dist * 0.50
+                    else:
+                        suggested_sl = entry - tp_dist * 0.50
+                    mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó {progress*100:.0f}% TP - SL sugerido: {suggested_sl:.5f}")
+                    _msg_70 = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
                                f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                                f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                               f"👉 Considerar cerrar parcial")
+                               f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
                     try:
                         from push import send as _push_send
                         token = state.get("push_token", "")
