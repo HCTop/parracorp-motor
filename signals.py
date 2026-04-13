@@ -185,24 +185,27 @@ def check_prices(symbol, current_price):
                 if progress >= 0.5:
                     sig["_notified_50pct"] = True
                     mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 50% TP ({progress*100:.0f}%) - Mover SL a BE")
+                    _msg_50 = (f"⚠️ 50% TP alcanzado {symbol} {action}\n"
+                              f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                              f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                              f"👉 Mover SL a breakeven ({entry:.5f})")
                     try:
                         from push import send as _push_send
                         token = state.get("push_token", "")
                         if token:
-                            _push_send(token,
-                                f"50% TP {symbol} {action}",
-                                f"Precio en {current_price:.5f} ({progress*100:.0f}% del TP). Mover SL a breakeven ({entry:.5f})",
-                                signal_type="alert")
-                    except Exception:
-                        pass
+                            _push_send(token, f"50% TP {symbol} {action}", _msg_50, signal_type="alert")
+                    except Exception as e:
+                        mlog("PUSH", f"Error 50% push: {e}")
                     try:
-                        from telegram_bot import send_message as _tg_msg
-                        _tg_msg(f"⚠️ *50% TP alcanzado* {symbol} {action}\n"
-                                f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
-                                f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                                f"👉 Mover SL a breakeven ({entry:.5f})")
-                    except Exception:
-                        pass
+                        from telegram_bot import send_custom as _tg_send
+                        _tg_send(_msg_50)
+                    except Exception as e:
+                        mlog("TG", f"Error 50% telegram: {e}")
+                    try:
+                        import whatsapp_bot as _wa
+                        _wa.send_custom(_msg_50)
+                    except Exception as e:
+                        mlog("WA", f"Error 50% whatsapp: {e}")
 
             # === Alerta 70% TP (trailing tight) ===
             if not sig.get("_notified_70pct", False) and sig.get("_notified_50pct", False):
@@ -214,24 +217,27 @@ def check_prices(symbol, current_price):
                 if progress >= 0.7:
                     sig["_notified_70pct"] = True
                     mlog("PARTIAL", f"{sig['id']} {symbol} alcanzó 70% TP - Considerar cerrar parcial")
+                    _msg_70 = (f"🔥 70% TP alcanzado {symbol} {action}\n"
+                               f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
+                               f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                               f"👉 Considerar cerrar parcial")
                     try:
                         from push import send as _push_send
                         token = state.get("push_token", "")
                         if token:
-                            _push_send(token,
-                                f"70% TP {symbol} {action}",
-                                f"Precio en {current_price:.5f} ({progress*100:.0f}% del TP). Considerar trailing tight o cerrar parcial.",
-                                signal_type="alert")
-                    except Exception:
-                        pass
+                            _push_send(token, f"70% TP {symbol} {action}", _msg_70, signal_type="alert")
+                    except Exception as e:
+                        mlog("PUSH", f"Error 70% push: {e}")
                     try:
-                        from telegram_bot import send_message as _tg_msg
-                        _tg_msg(f"🔥 *70% TP alcanzado* {symbol} {action}\n"
-                                f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
-                                f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                                f"👉 Trailing tight o cerrar parcial")
-                    except Exception:
-                        pass
+                        from telegram_bot import send_custom as _tg_send
+                        _tg_send(_msg_70)
+                    except Exception as e:
+                        mlog("TG", f"Error 70% telegram: {e}")
+                    try:
+                        import whatsapp_bot as _wa
+                        _wa.send_custom(_msg_70)
+                    except Exception as e:
+                        mlog("WA", f"Error 70% whatsapp: {e}")
 
             hit = None
             if action == "BUY":
