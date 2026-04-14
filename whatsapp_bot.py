@@ -135,7 +135,12 @@ def send_signal_open(signal, chart_path=None):
         f"Take Profit: {_fmt_price(tp)}\n"
         f"R:R: *{rr:.1f}:1* | Conf: {conf}%\n"
     )
-    lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else f"{lote_std:.4f}" if lote_std > 0 else "--"
+    if lote_std >= 0.01:
+        lote_txt = f"{lote_std:.2f}"
+    elif lote_std > 0:
+        lote_txt = f"0.01 (min broker, calc={lote_std:.4f})"
+    else:
+        lote_txt = "0.01 (min broker)"
     text += f"Lote: *{lote_txt}*"
     if unidades > 0:
         text += f" ({unidades:.0f} uds)"
