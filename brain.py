@@ -996,19 +996,59 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
     }
 
 
-def _consensus_vote_v4(groq_result, gemini_result, stats_result):
+def _retry_ia(ia_name, proposed_action, proposed_conf, proposer_name,
+              symbol, snapshot, engines_result, context, htf_trend, sr_info):
+    """
+    Repregunta a una IA que dijo WAIT cuando la otra propuso BUY/SELL.
+    Le da contexto de que la otra IA ya dijo operar y le pide reconsiderar.
+    """
+    if not symbol or not snapshot:
+        return None
+
+    precio = snapshot.get("precio", 0)
+    interpretation = _interpret_context(symbol, snapshot, engines_result or {}, context or {}, htf_trend or "N/A", sr_info)
+
+    retry_prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
+
+{symbol} | Precio={precio}
+
+La otra IA ({proposer_name}) propone {proposed_action} con {proposed_conf}% de confianza.
+Tu dijiste WAIT en la primera ronda. Reconsidera con los datos actuales:
+
+=== DATOS DEL MERCADO ===
+{interpretation}
+
+¿Mantienes WAIT o cambias a {proposed_action}? Se honesto: si los datos NO justifican operar, di WAIT.
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"reason":"1 frase"}}"""
+
+    try:
+        if ia_name == "groq":
+            result = _call_groq(retry_prompt, max_tokens=200)
+        else:
+            result = _call_gemini(retry_prompt, max_tokens=200)
+        if result:
+            log("BRAIN", f"RETRY {ia_name.upper()}: {result.get('action','?')} ({result.get('confidence',0)}%)")
+        return result
+    except Exception as e:
+        log("BRAIN", f"RETRY {ia_name} error: {e}")
+        return None
+
+
+def _consensus_vote_v4(groq_result, gemini_result, stats_result,
+                       symbol=None, snapshot=None, engines_result=None,
+                       context=None, htf_trend=None, sr_info=None):
     """
     Consensus Modelo B v4 - IA como cerebro principal.
 
     Groq + Gemini votan en paralelo. Stats es solo contexto informativo.
 
-    Reglas (2/2 estricto):
-    - Ambas fallan (None)         -> WAIT (sin datos no se opera)
-    - 1 falla (None)              -> WAIT (necesitamos ambas IAs)
-    - 2/2 coinciden BUY/SELL      -> EMITE con media de confianzas
-    - 1 BUY/SELL + 1 WAIT         -> WAIT (no hay acuerdo)
-    - Se contradicen (BUY vs SELL)-> WAIT
-    - 2/2 WAIT                    -> WAIT
+    Reglas (2/2 estricto con repregunta):
+    - 2/2 coinciden BUY/SELL      -> EMITE
+    - 1/2 (una dice BUY/SELL, otra WAIT) -> REPREGUNTA a la que dijo WAIT
+      Si cambia de opinion -> EMITE. Si insiste WAIT -> WAIT
+    - Se contradicen (BUY vs SELL)-> WAIT (no se repregunta)
+    - Ambas WAIT                  -> WAIT
+    - Alguna falla (None)         -> WAIT
     """
     # Si alguna IA fallo, no operar
     if not groq_result or not gemini_result:
@@ -1063,18 +1103,42 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result):
         consensus_str = f"2/2 [{v_groq}]"
         log("BRAIN", f"CONSENSUS 2/2: {v_groq} (Groq:{c_groq}% Gemini:{c_gemini}% -> {final_confidence}%)")
 
-    # Caso 2: una dice BUY/SELL, otra dice WAIT -> NO operar (requiere 2/2)
+    # Caso 2: una dice BUY/SELL, otra dice WAIT -> REPREGUNTAR
     elif v_groq in ("BUY", "SELL") and v_gemini == "WAIT":
-        final_action = "WAIT"
-        final_confidence = 0
-        consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT] -> WAIT"
-        log("BRAIN", f"CONSENSUS 1/2: Groq={v_groq} pero Gemini=WAIT -> NO OPERAR (requiere 2/2)")
+        # Repreguntar a Gemini
+        log("BRAIN", f"1/2: Groq={v_groq} Gemini=WAIT -> repreguntando a Gemini...")
+        retry = _retry_ia("gemini", v_groq, c_groq, "Groq",
+                          symbol, snapshot, engines_result, context, htf_trend, sr_info)
+        if retry and retry.get("action", "WAIT").upper() == v_groq:
+            c_retry = int(retry.get("confidence", 0))
+            final_action = v_groq
+            final_confidence = int((c_groq + c_retry) / 2)
+            consensus_str = f"2/2 [{v_groq}] (Gemini cambio en repregunta)"
+            votos_info["gemini"] = {"action": v_groq, "confidence": c_retry, "retry": True}
+            log("BRAIN", f"REPREGUNTA OK: Gemini cambio a {v_groq} ({c_retry}%)")
+        else:
+            final_action = "WAIT"
+            final_confidence = 0
+            consensus_str = f"1/2 [Groq:{v_groq}, Gemini:WAIT x2] -> WAIT"
+            log("BRAIN", f"REPREGUNTA FAIL: Gemini insiste WAIT -> NO OPERAR")
 
     elif v_gemini in ("BUY", "SELL") and v_groq == "WAIT":
-        final_action = "WAIT"
-        final_confidence = 0
-        consensus_str = f"1/2 [Groq:WAIT, Gemini:{v_gemini}] -> WAIT"
-        log("BRAIN", f"CONSENSUS 1/2: Gemini={v_gemini} pero Groq=WAIT -> NO OPERAR (requiere 2/2)")
+        # Repreguntar a Groq
+        log("BRAIN", f"1/2: Gemini={v_gemini} Groq=WAIT -> repreguntando a Groq...")
+        retry = _retry_ia("groq", v_gemini, c_gemini, "Gemini",
+                          symbol, snapshot, engines_result, context, htf_trend, sr_info)
+        if retry and retry.get("action", "WAIT").upper() == v_gemini:
+            c_retry = int(retry.get("confidence", 0))
+            final_action = v_gemini
+            final_confidence = int((c_gemini + c_retry) / 2)
+            consensus_str = f"2/2 [{v_gemini}] (Groq cambio en repregunta)"
+            votos_info["groq"] = {"action": v_gemini, "confidence": c_retry, "retry": True}
+            log("BRAIN", f"REPREGUNTA OK: Groq cambio a {v_gemini} ({c_retry}%)")
+        else:
+            final_action = "WAIT"
+            final_confidence = 0
+            consensus_str = f"1/2 [Gemini:{v_gemini}, Groq:WAIT x2] -> WAIT"
+            log("BRAIN", f"REPREGUNTA FAIL: Groq insiste WAIT -> NO OPERAR")
 
     # Caso 3: se contradicen (BUY vs SELL)
     elif {v_groq, v_gemini} == {"BUY", "SELL"}:
@@ -1222,7 +1286,10 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             f"Gemini={'FAIL' if not gemini_result else gemini_result.get('action','?')}")
 
         # 5. Consensus Modelo B (IA decide, Stats es contexto)
-        consensus = _consensus_vote_v4(groq_result, gemini_result, stats_result)
+        consensus = _consensus_vote_v4(groq_result, gemini_result, stats_result,
+                                       symbol=symbol, snapshot=snapshot,
+                                       engines_result=engines_result, context=context,
+                                       htf_trend=htf_trend, sr_info=sr_info)
 
         # SL/TP: si la IA propone valores, usarlos. Si no, usar optimizados por par.
         _vol_ratio = snapshot.get("vol_ratio", 1.0)
