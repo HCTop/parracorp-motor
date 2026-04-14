@@ -582,7 +582,25 @@ def _interpret_context(symbol, snapshot, engines_result, context, htf_trend="N/A
         cci_zone = " [SOBRECOMPRA]"
     elif cci < -100:
         cci_zone = " [SOBREVENTA]"
-    lines.append(f"CCI={cci:.0f}{cci_zone} | Williams %R={williams_r:.0f}")
+    wr_zone = ""
+    if williams_r > -20:
+        wr_zone = " [SOBRECOMPRA]"
+    elif williams_r < -80:
+        wr_zone = " [SOBREVENTA]"
+    lines.append(f"CCI={cci:.0f}{cci_zone} | Williams %R={williams_r:.0f}{wr_zone}")
+
+    # Bollinger Bands
+    bb_upper = snapshot.get("bb_upper", 0)
+    bb_lower = snapshot.get("bb_lower", 0)
+    if bb_upper > 0 and bb_lower > 0:
+        bb_width = bb_upper - bb_lower
+        if precio >= bb_upper * 0.998:
+            lines.append(f"Precio TOCANDO BANDA SUPERIOR Bollinger ({bb_upper:.5g}) - posible reversa bajista")
+        elif precio <= bb_lower * 1.002:
+            lines.append(f"Precio TOCANDO BANDA INFERIOR Bollinger ({bb_lower:.5g}) - posible reversa alcista")
+        elif bb_width > 0:
+            bb_pos = (precio - bb_lower) / bb_width * 100
+            lines.append(f"Bollinger: precio al {bb_pos:.0f}% del rango (sup={bb_upper:.5g} inf={bb_lower:.5g})")
 
     # Motores
     mom = engines_result.get("momentum_score", 0)
@@ -677,7 +695,6 @@ def modelo_groq(symbol, snapshot, engines_result, context, htf_trend="N/A", sr_i
                       f"NOTA: Es solo una referencia. Tu decides independientemente.")
 
     prompt = f"""Eres un trader profesional analizando {symbol} en timeframe 1H.
-Analiza los datos y decide si hay una oportunidad clara de trading.
 
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
@@ -690,14 +707,15 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 {stats_text}
 
 === TU TAREA ===
-Eres un analista tecnico profesional. Analiza los datos del mercado y decide libremente si operar o no.
-Responde BUY, SELL o WAIT segun tu propio criterio. Indica tu nivel de confianza (0-100) y cuanto arriesgar.
+Analiza los datos y decide libremente. Presta especial atencion a:
+- Estocastico K/D: sobrecompra (>80) y sobreventa (<20) son oportunidades de entrada rapida
+- CCI extremos (>100 o <-100) y Williams %R (-80/-20) confirman zonas de agotamiento
+- Cruces de K sobre D en sobreventa = BUY, K bajo D en sobrecompra = SELL
+- Puedes usar TP ajustados (1.0-2.0 ATR) para capturar movimientos rapidos
+- SL tambien puede ser ajustado (0.8-1.5 ATR) si la señal es clara
 
-Parametros de respuesta:
-- sl_atr: multiplo de ATR para stop loss (rango tipico 1.0-3.0)
-- tp_atr: multiplo de ATR para take profit (rango tipico 1.5-5.0)
-- risk_pct: porcentaje del capital a arriesgar (0.5-2.0)
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"analysis":"1 frase"}}
+Responde BUY, SELL o WAIT. Confianza 0-100.
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     result = _call_groq(prompt, max_tokens=300)
@@ -845,7 +863,6 @@ def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, h
     prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
 
 Eres un trader profesional analizando {symbol} en timeframe 1H.
-Analiza los datos y decide si hay una oportunidad clara de trading.
 
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
@@ -862,14 +879,15 @@ Sentimiento: {news.get('sentiment','neutral')}
 {stats_text}
 
 === TU TAREA ===
-Eres un analista tecnico profesional. Analiza los datos del mercado y las noticias, y decide libremente si operar o no.
-Responde BUY, SELL o WAIT segun tu propio criterio. Indica tu nivel de confianza (0-100) y cuanto arriesgar.
+Analiza los datos y las noticias, y decide libremente. Presta especial atencion a:
+- Estocastico K/D: sobrecompra (>80) y sobreventa (<20) son oportunidades de entrada rapida
+- CCI extremos (>100 o <-100) y Williams %R (-80/-20) confirman zonas de agotamiento
+- Cruces de K sobre D en sobreventa = BUY, K bajo D en sobrecompra = SELL
+- Puedes usar TP ajustados (1.0-2.0 ATR) para capturar movimientos rapidos
+- SL tambien puede ser ajustado (0.8-1.5 ATR) si la señal es clara
 
-Parametros de respuesta:
-- sl_atr: multiplo de ATR para stop loss (rango tipico 1.0-3.0)
-- tp_atr: multiplo de ATR para take profit (rango tipico 1.5-5.0)
-- risk_pct: porcentaje del capital a arriesgar (0.5-2.0)
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":3.0,"risk_pct":1.0,"reason":"1 frase"}}"""
+Responde BUY, SELL o WAIT. Confianza 0-100.
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"reason":"1 frase"}}"""
 
     log("GEMINI", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     result = _call_gemini(prompt, max_tokens=300)
