@@ -202,31 +202,37 @@ def check_prices(symbol, current_price):
                 # Si salta directo al 70%+, solo mandar la del 70% (no ambas)
                 if progress >= 0.7 and not sig.get("_notified_70pct", False):
                     sig["_notified_70pct"] = True
-                    sig["_notified_50pct"] = True  # marcar 50% tambien para que no salte despues
-                    _save()
+                    sig["_notified_50pct"] = True
                     if action == "BUY":
-                        suggested_sl = entry + tp_dist * 0.50
+                        new_sl = entry + tp_dist * 0.50
                     else:
-                        suggested_sl = entry - tp_dist * 0.50
-                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                        new_sl = entry - tp_dist * 0.50
+                    old_sl = sig["sl"]
+                    sig["sl"] = round(new_sl, 6)
+                    sl = sig["sl"]  # actualizar variable local para check SL/TP
+                    _save()
+                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL movido: {old_sl:.5f} → {new_sl:.5f}")
                     _msg = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                            f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
+                            f"✅ SL movido a {new_sl:.5f} (protege +50%)")
                     _send_alert(sig, symbol, f"70% TP {symbol} {action}", _msg)
 
                 elif progress >= 0.5 and not sig.get("_notified_50pct", False):
                     sig["_notified_50pct"] = True
-                    _save()
                     if action == "BUY":
-                        suggested_sl = entry + tp_dist * 0.25
+                        new_sl = entry + tp_dist * 0.25
                     else:
-                        suggested_sl = entry - tp_dist * 0.25
-                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                        new_sl = entry - tp_dist * 0.25
+                    old_sl = sig["sl"]
+                    sig["sl"] = round(new_sl, 6)
+                    sl = sig["sl"]  # actualizar variable local para check SL/TP
+                    _save()
+                    mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL movido: {old_sl:.5f} → {new_sl:.5f}")
                     _msg = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
-                            f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")
+                            f"✅ SL movido a {new_sl:.5f} (protege +25%)")
                     _send_alert(sig, symbol, f"50% TP {symbol} {action}", _msg)
 
             hit = None
