@@ -209,7 +209,7 @@ def check_prices(symbol, current_price):
                     else:
                         suggested_sl = entry - tp_dist * 0.50
                     mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
-                    _msg = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
+                    _msg = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
                             f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
@@ -223,7 +223,7 @@ def check_prices(symbol, current_price):
                     else:
                         suggested_sl = entry - tp_dist * 0.25
                     mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
-                    _msg = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action}\n"
+                    _msg = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
                             f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")

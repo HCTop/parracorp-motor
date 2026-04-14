@@ -31,6 +31,41 @@ _CONTRACT = {
 }
 
 
+def _quote_to_usd(sym):
+    """
+    Devuelve factor para convertir de divisa quote a USD.
+    Para NZDJPY: quote=JPY, factor = 1/USDJPY ≈ 0.0067
+    Para EURUSD: quote=USD, factor = 1.0
+    """
+    # Extraer quote currency (ultimos 3 chars)
+    quote = sym[-3:]
+    if quote == "USD":
+        return 1.0
+    try:
+        from data_feed import get_price
+        if quote == "JPY":
+            r = get_price("USDJPY")
+            return (1.0 / r) if r and r > 0 else (1.0 / 150.0)
+        elif quote == "CHF":
+            r = get_price("USDCHF")
+            return (1.0 / r) if r and r > 0 else (1.0 / 0.90)
+        elif quote == "CAD":
+            r = get_price("USDCAD")
+            return (1.0 / r) if r and r > 0 else (1.0 / 1.37)
+        elif quote == "GBP":
+            r = get_price("GBPUSD")
+            return r if r and r > 0 else 1.26
+        elif quote == "AUD":
+            r = get_price("AUDUSD")
+            return r if r and r > 0 else 0.65
+        elif quote == "NZD":
+            r = get_price("NZDUSD")
+            return r if r and r > 0 else 0.60
+    except Exception:
+        pass
+    return 1.0
+
+
 def _get_contract_size(sym):
     """Devuelve contract size y tipo para un símbolo."""
     if sym.startswith("XAU"):
@@ -124,9 +159,11 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
         result["lote"] = result["unidades"]
 
     else:
-        # Forex estándar (XXX/USD): pip_value = pip * contract_size = $10/lot
-        # Indices/Commodity: PnL = diff * contract_size * lots
-        pip_value_per_lot = pip * contract_size
+        # Forex: pip_value en USD = pip * contract_size * quote_to_usd
+        # Para EURUSD (quote=USD): 0.0001 * 100000 * 1.0 = $10/pip/lot
+        # Para NZDJPY (quote=JPY): 0.01 * 100000 * (1/150) = $6.67/pip/lot
+        quote_factor = _quote_to_usd(sym) if tipo == "forex" else 1.0
+        pip_value_per_lot = pip * contract_size * quote_factor
         if pip_value_per_lot > 0 and sl_pips > 0:
             lote_std = riesgo_usd / (sl_pips * pip_value_per_lot)
         else:
@@ -199,6 +236,7 @@ def pnl_usd(entrada, salida, lote, simbolo, action):
     """
     Calcula P&L en USD.
     lote = unidades (no lotes std). Para forex lote=100000 = 1 lot std.
+    Para pares cruzados (NZDJPY, GBPJPY, etc) convierte de quote currency a USD.
     """
     sym = simbolo.upper().replace("/", "")
 
@@ -211,7 +249,11 @@ def pnl_usd(entrada, salida, lote, simbolo, action):
         # USD como base: PnL = diff * unidades / precio_salida
         pnl = diff * lote / salida if salida else 0
     else:
-        # Todo lo demas: PnL = diff * unidades
+        # PnL en quote currency = diff * lote
         pnl = diff * lote
+        # Convertir a USD si quote != USD
+        _, tipo = _get_contract_size(sym)
+        if tipo == "forex" and not sym.endswith("USD"):
+            pnl *= _quote_to_usd(sym)
 
     return round(pnl, 2)
