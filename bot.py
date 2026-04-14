@@ -576,7 +576,7 @@ def _log_hourly_detail(symbol, tf, snapshot, htf, tqs, regimen, eng, skip_reason
 
 
 def _price_checker():
-    """Hilo que verifica SL/TP contra precios actuales."""
+    """Hilo que verifica SL/TP contra precios actuales (incluye mechas high/low)."""
     while True:
         try:
             active = get_active()
@@ -584,7 +584,11 @@ def _price_checker():
                 sym = sig["symbol"]
                 price = get_price(sym)
                 if price > 0:
-                    triggered = check_prices(sym, price)
+                    # Obtener high/low de vela actual para detectar mechas
+                    snap = get_snapshot(sym, sig.get("timeframe", "60"))
+                    candle_high = snap.get("high", price) if snap else price
+                    candle_low = snap.get("low", price) if snap else price
+                    triggered = check_prices(sym, price, candle_low=candle_low, candle_high=candle_high)
                     for ts in triggered:
                         # Notificar cierre
                         tg.send_signal_close(ts)

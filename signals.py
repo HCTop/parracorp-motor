@@ -178,9 +178,12 @@ def emit(symbol, action, entry_price, sl, tp, timeframe="60",
         return signal
 
 
-def check_prices(symbol, current_price):
-    """Verifica SL/TP contra precio actual (paper trading)."""
+def check_prices(symbol, current_price, candle_low=None, candle_high=None):
+    """Verifica SL/TP contra precio actual y mechas de vela (paper trading)."""
     triggered = []
+    # Usar mechas para detectar toques que el precio actual ya no muestra
+    c_low = candle_low if candle_low and candle_low > 0 else current_price
+    c_high = candle_high if candle_high and candle_high > 0 else current_price
 
     with _lock:
         for sig in _signals:
@@ -237,34 +240,43 @@ def check_prices(symbol, current_price):
 
             hit = None
             if action == "BUY":
-                if current_price <= sl:
+                # BUY: SL se toca con la mecha baja, TP con la mecha alta
+                if c_low <= sl:
                     hit = "HIT_SL"
-                elif current_price >= tp:
+                elif c_high >= tp:
                     hit = "HIT_TP"
             elif action == "SELL":
-                if current_price >= sl:
+                # SELL: SL se toca con la mecha alta, TP con la mecha baja
+                if c_high >= sl:
                     hit = "HIT_SL"
-                elif current_price <= tp:
+                elif c_low <= tp:
                     hit = "HIT_TP"
 
             # Trailing eliminado - ya no se usa
 
             if hit:
                 sig["status"] = hit
-                sig["exit_price"] = round(current_price, 6)
+                # Exit price = SL o TP exacto (no el precio actual, que puede haber rebotado)
+                if hit == "HIT_SL":
+                    exit_p = sl
+                elif hit == "HIT_TP":
+                    exit_p = tp
+                else:
+                    exit_p = current_price
+                sig["exit_price"] = round(exit_p, 6)
                 sig["exit_ts"] = int(time.time())
 
-                # PnL calculo
+                # PnL calculo con el precio de salida real (SL o TP)
                 if action == "BUY":
-                    pnl_pct = (current_price - entry) / entry * 100
+                    pnl_pct = (exit_p - entry) / entry * 100
                 else:
-                    pnl_pct = (entry - current_price) / entry * 100
+                    pnl_pct = (entry - exit_p) / entry * 100
 
                 sig["pnl_pct"] = round(pnl_pct, 4)
 
                 # PnL USD
                 from risk_engine import pnl_usd
-                sig["pnl_usd"] = pnl_usd(entry, current_price, sig["lote"], symbol, action)
+                sig["pnl_usd"] = pnl_usd(entry, exit_p, sig["lote"], symbol, action)
 
                 # Actualizar estado global
                 if hit == "HIT_SL":
@@ -297,7 +309,7 @@ def check_prices(symbol, current_price):
                     "action": action,
                     "status": hit,
                     "entry": entry,
-                    "exit": round(current_price, 6),
+                    "exit": round(exit_p, 6),
                     "sl_final": sig["sl"],   # SL al cierre (puede haberse movido por trailing)
                     "tp": sig["tp"],
                     "trailing_stop": "none",
