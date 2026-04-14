@@ -588,6 +588,12 @@ def _price_checker():
                     snap = get_snapshot(sym, sig.get("timeframe", "60"))
                     candle_high = snap.get("high", price) if snap else price
                     candle_low = snap.get("low", price) if snap else price
+                    sl = sig.get("sl", 0)
+                    # Log si la mecha se acerca al SL (para debug)
+                    if sl > 0 and sig.get("action") == "BUY" and candle_low < sl * 1.002:
+                        mlog("WICK", f"{sym} low={candle_low:.2f} SL={sl:.2f} price={price:.2f}")
+                    elif sl > 0 and sig.get("action") == "SELL" and candle_high > sl * 0.998:
+                        mlog("WICK", f"{sym} high={candle_high:.2f} SL={sl:.2f} price={price:.2f}")
                     triggered = check_prices(sym, price, candle_low=candle_low, candle_high=candle_high)
                     for ts in triggered:
                         # Notificar cierre
