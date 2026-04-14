@@ -144,15 +144,13 @@ def send_signal_open(signal, chart_path=None):
         f"\u2022 Take Profit: <code>{_fmt_price(tp, sym)}</code>\n"
         f"\u2022 R:R: <b>{rr:.1f}:1</b> | Conf: {conf}%\n"
     )
-    if lote_std >= 0.01:
-        lote_txt = f"{lote_std:.2f}"
-    elif lote_std > 0:
-        lote_txt = f"0.01 (min broker, calc={lote_std:.4f})"
-    else:
-        lote_txt = "0.01 (min broker)"
+    lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else "0.01"
+    min_lot = signal.get("min_lot_applied", False)
     text += f"\u2022 Lote: <b>{lote_txt}</b>"
     if unidades > 0:
         text += f" ({unidades:.0f} uds)"
+    if min_lot:
+        text += " ⚠️ lote minimo broker"
     text += "\n"
     trailing = signal.get("trailing_stop", "none")
     if trailing != "none":

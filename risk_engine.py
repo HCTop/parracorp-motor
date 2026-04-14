@@ -175,6 +175,18 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
         tp_dist = abs(precio - tp)
         result["rr_ratio"] = round(tp_dist / sl_dist, 2)
 
+    # Minimo broker: 0.01 lotes. Si el calculo da menos, forzar a 0.01
+    # y recalcular unidades para que el PnL sea real
+    MIN_LOT = 0.01
+    if result["lote_std"] < MIN_LOT and result["lote_std"] > 0:
+        result["lote_std_calc"] = result["lote_std"]  # guardar el calculado original
+        result["lote_std"] = MIN_LOT
+        result["unidades"] = round(MIN_LOT * contract_size, 4)
+        result["lote"] = result["unidades"]
+        result["min_lot_applied"] = True
+    else:
+        result["min_lot_applied"] = False
+
     return result
 
 

@@ -380,6 +380,8 @@ def _on_new_bar(symbol, tf):
                             atr=snapshot.get("atr", 0),
                         )
                         if sig:
+                            if lot_result.get("min_lot_applied"):
+                                sig["min_lot_applied"] = True
                             # Notificaciones
                             chart_path = generate_signal_chart(sig, get_ohlcv)
                             tg.send_signal_open(sig, chart_path=chart_path)
