@@ -144,12 +144,11 @@ def send_signal_open(signal, chart_path=None):
         f"\u2022 Take Profit: <code>{_fmt_price(tp, sym)}</code>\n"
         f"\u2022 R:R: <b>{rr:.1f}:1</b> | Conf: {conf}%\n"
     )
-    if lote_std > 0 or unidades > 0:
-        lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else f"{lote_std:.4f}" if lote_std > 0 else "--"
-        text += f"\u2022 Lote: <b>{lote_txt}</b>"
-        if unidades > 0:
-            text += f" ({unidades:.0f} uds)"
-        text += "\n"
+    lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else f"{lote_std:.4f}" if lote_std > 0 else "--"
+    text += f"\u2022 Lote: <b>{lote_txt}</b>"
+    if unidades > 0:
+        text += f" ({unidades:.0f} uds)"
+    text += "\n"
     trailing = signal.get("trailing_stop", "none")
     if trailing != "none":
         ts_map = {
