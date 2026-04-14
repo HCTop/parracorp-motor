@@ -898,89 +898,47 @@ def _consensus_vote(stats_result, groq_result, gemini_result):
     """
     Stats manda, IA solo puede vetar.
 
-    Logica:
-    - Si Stats dice WAIT → WAIT siempre (IA no puede añadir trades)
-    - Si Stats dice BUY/SELL → necesita que al menos 1 IA confirme
-    - Si ambas IA contradicen a Stats → WAIT (veto)
+    Logica CONSENSO 2/2 ESTRICTO:
+    - Groq y Gemini DEBEN decir lo mismo (BUY o SELL) para operar
+    - Si uno dice WAIT o dicen direcciones opuestas → WAIT
+    - Stats es solo referencia, no decide
 
     Returns: dict con action, confidence, sl_atr, tp_atr, risk_pct, trailing, reason, votos
     """
     votos = []
 
-    # Voto Stats (siempre disponible)
+    # Voto Stats (solo referencia)
     v_stats = stats_result.get("action", "WAIT")
     c_stats = stats_result.get("confidence", 0)
     votos.append(("STATS", v_stats, c_stats))
 
-    # Voto Groq (puede ser None)
+    # Voto Groq
     if groq_result:
         v_groq = groq_result.get("action", "WAIT")
         c_groq = groq_result.get("confidence", 0)
-        votos.append(("GROQ", v_groq, c_groq))
     else:
-        votos.append(("GROQ", "WAIT", 0))
+        v_groq, c_groq = "WAIT", 0
+    votos.append(("GROQ", v_groq, c_groq))
 
-    # Voto Gemini (puede ser None)
+    # Voto Gemini
     if gemini_result:
         v_gemini = gemini_result.get("action", "WAIT")
         c_gemini = gemini_result.get("confidence", 0)
-        votos.append(("GEMINI", v_gemini, c_gemini))
     else:
-        votos.append(("GEMINI", "WAIT", 0))
+        v_gemini, c_gemini = "WAIT", 0
+    votos.append(("GEMINI", v_gemini, c_gemini))
 
-    v_groq = votos[1][1]
-    c_groq = votos[1][2]
-    v_gemini = votos[2][1]
-    c_gemini = votos[2][2]
-
-    # Stats manda: si Stats dice WAIT, no se opera
-    if v_stats == "WAIT":
-        final_action = "WAIT"
-        final_confidence = c_stats
-    elif v_stats in ("BUY", "SELL"):
-        # Stats quiere operar — necesita confirmacion de al menos 1 IA
-        ia_confirms = 0
-        ia_vetoes = 0
-        # IA confirma si dice la misma direccion O si dice WAIT (no contradice)
-        # IA veta si dice la direccion OPUESTA
-        for name, v_ia, c_ia in [("GROQ", v_groq, c_groq), ("GEMINI", v_gemini, c_gemini)]:
-            if v_ia == v_stats:
-                ia_confirms += 1  # Misma direccion: confirma
-            elif v_ia == "WAIT":
-                pass  # Neutral: ni confirma ni veta
-            else:
-                ia_vetoes += 1  # Direccion opuesta: veto fuerte
-
-        if ia_vetoes >= 2:
-            # Ambas IA dicen lo contrario → veto total
-            mlog("BRAIN", f"VETO: ambas IA contradicen Stats ({v_stats})")
-            final_action = "WAIT"
-            final_confidence = 0
-        elif ia_confirms >= 1:
-            # Al menos 1 IA confirma → operar
-            final_action = v_stats
-            confs = [c_stats]
-            if v_groq == v_stats:
-                confs.append(c_groq)
-            if v_gemini == v_stats:
-                confs.append(c_gemini)
-            final_confidence = int(sum(confs) / len(confs))
-        elif ia_vetoes == 1:
-            # 1 IA contradice, la otra neutral → operar con menos confianza
-            final_action = v_stats
-            final_confidence = max(c_stats - 15, 50)
-        else:
-            # Ambas IA dicen WAIT (neutral) → confiar en Stats
-            final_action = v_stats
-            final_confidence = c_stats
+    # CONSENSO 2/2 ESTRICTO: Groq y Gemini deben coincidir
+    if v_groq in ("BUY", "SELL") and v_groq == v_gemini:
+        # 2/2 - Ambas IAs de acuerdo
+        final_action = v_groq
+        final_confidence = int((c_groq + c_gemini) / 2)
+        mlog("BRAIN", f"CONSENSO 2/2: {v_groq} (Groq={c_groq}% Gemini={c_gemini}%)")
     else:
+        # No hay consenso → WAIT
         final_action = "WAIT"
         final_confidence = 0
-
-    # Gate minimo
-    if final_action in ("BUY", "SELL") and final_confidence < 50:
-        mlog("BRAIN", f"Confianza {final_confidence}% < 50% -> WAIT")
-        final_action = "WAIT"
+        mlog("BRAIN", f"SIN CONSENSO: Groq={v_groq} Gemini={v_gemini} → WAIT")
 
     # Parametros: prioridad Gemini > Groq > Stats
     params_source = gemini_result or groq_result or {}
