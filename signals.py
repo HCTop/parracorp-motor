@@ -209,9 +209,11 @@ def check_prices(symbol, current_price):
                     else:
                         suggested_sl = entry - tp_dist * 0.50
                     mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                    _lote_str = f"{sig.get('lote_std', 0):.2f}" if sig.get('lote_std', 0) >= 0.01 else "--"
                     _msg = (f"🔥 {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                            f"Lote: {_lote_str}\n"
                             f"👉 Mover SL a {suggested_sl:.5f} (protege +50%) o cerrar")
                     _send_alert(sig, symbol, f"70% TP {symbol} {action}", _msg)
 
@@ -223,9 +225,11 @@ def check_prices(symbol, current_price):
                     else:
                         suggested_sl = entry - tp_dist * 0.25
                     mlog("PARTIAL", f"{sig['id']} {symbol} {progress*100:.0f}% TP - SL: {suggested_sl:.5f}")
+                    _lote_str = f"{sig.get('lote_std', 0):.2f}" if sig.get('lote_std', 0) >= 0.01 else "--"
                     _msg = (f"⚠️ {progress*100:.0f}% TP alcanzado {symbol} {action} [{sig['id']}]\n"
                             f"Precio: {current_price:.5f} ({progress*100:.0f}%)\n"
                             f"Entry: {entry:.5f} | TP: {tp:.5f}\n"
+                            f"Lote: {_lote_str}\n"
                             f"👉 Mover SL a {suggested_sl:.5f} (protege +25%)")
                     _send_alert(sig, symbol, f"50% TP {symbol} {action}", _msg)
 

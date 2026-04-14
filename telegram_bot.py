@@ -142,7 +142,7 @@ def send_signal_open(signal, chart_path=None):
         f"\u2022 Entrada: <code>{_fmt_price(entry, sym)}</code>\n"
         f"\u2022 Stop Loss: <code>{_fmt_price(sl, sym)}</code>\n"
         f"\u2022 Take Profit: <code>{_fmt_price(tp, sym)}</code>\n"
-        f"\u2022 R:R: <b>{int(rr)}:1</b> | Conf: {conf}%\n"
+        f"\u2022 R:R: <b>{rr:.1f}:1</b> | Conf: {conf}%\n"
     )
     if lote_std > 0 or unidades > 0:
         lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else f"{lote_std:.4f}" if lote_std > 0 else "--"
