@@ -136,7 +136,7 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
         unidades = riesgo_usd / sl_dist
         lote_std = unidades / contract_size
         result["unidades"] = round(unidades, 2)
-        result["lote_std"] = round(lote_std, 2)
+        result["lote_std"] = round(lote_std, 4)  # XAG puede dar 0.0027, no truncar a 0.00
         result["lote"] = result["unidades"]  # unidades para calculo interno
 
     elif tipo == "crypto":
@@ -155,13 +155,11 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
             lote_std = 0
         unidades = lote_std * contract_size
         result["unidades"] = max(1, round(unidades))
-        result["lote_std"] = round(lote_std, 2)
+        result["lote_std"] = round(lote_std, 4)
         result["lote"] = result["unidades"]
 
     else:
         # Forex: pip_value en USD = pip * contract_size * quote_to_usd
-        # Para EURUSD (quote=USD): 0.0001 * 100000 * 1.0 = $10/pip/lot
-        # Para NZDJPY (quote=JPY): 0.01 * 100000 * (1/150) = $6.67/pip/lot
         quote_factor = _quote_to_usd(sym) if tipo == "forex" else 1.0
         pip_value_per_lot = pip * contract_size * quote_factor
         if pip_value_per_lot > 0 and sl_pips > 0:
@@ -170,7 +168,7 @@ def calcular_lote(precio, sl, capital, riesgo_pct, simbolo, tp=None):
             lote_std = 0
         unidades = lote_std * contract_size
         result["unidades"] = max(1, round(unidades))
-        result["lote_std"] = round(lote_std, 2)
+        result["lote_std"] = round(lote_std, 4)
         result["lote"] = result["unidades"]
 
     if tp and sl_dist > 0:
