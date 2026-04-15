@@ -1488,6 +1488,147 @@ def ia_log_download():
     return send_file(IA_DECISIONS_LOG, as_attachment=True, download_name="ia_decisions.jsonl")
 
 
+@app.route("/ia/log/txt", methods=["GET"])
+def ia_log_txt():
+    """Descarga el log de IA como .txt legible con los prompts completos,
+    las respuestas de Groq/Gemini, el consenso y, si hubo emision, datos
+    de la senal resultante. Params: ?last=N (default 50), ?symbol=XAUUSD (opcional).
+    """
+    from brain import IA_DECISIONS_LOG
+    from signals import get_history, get_active
+    import os
+    from flask import Response
+
+    if not os.path.exists(IA_DECISIONS_LOG):
+        return Response("No hay log de decisiones aun.\n",
+                        mimetype="text/plain; charset=utf-8")
+
+    last_n = request.args.get("last", 50, type=int)
+    symbol_filter = (request.args.get("symbol", "") or "").upper().strip()
+
+    # Leer todas las lineas y filtrar
+    try:
+        with open(IA_DECISIONS_LOG, "r", encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except Exception as e:
+        return Response(f"Error leyendo log: {e}\n",
+                        mimetype="text/plain; charset=utf-8"), 500
+
+    records = []
+    for ln in lines:
+        try:
+            records.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+
+    if symbol_filter:
+        records = [r for r in records if r.get("symbol", "") == symbol_filter]
+
+    records = records[-last_n:]  # mas reciente al final
+    records.reverse()             # mas reciente primero
+
+    # Indice de senales por ts/symbol para enlazar decisiones con emisiones
+    try:
+        sig_index = {}
+        for s in list(get_active()) + list(get_history(limit=500)):
+            key = (s.get("symbol", ""), int(s.get("timestamp", 0)))
+            sig_index[key] = s
+    except Exception:
+        sig_index = {}
+
+    def find_signal(rec):
+        sym = rec.get("symbol", "")
+        ts = int(rec.get("ts", 0))
+        # Buscar senal emitida en ventana +/-90s del log de decision
+        best = None
+        for (ssym, sts), sig in sig_index.items():
+            if ssym != sym:
+                continue
+            if abs(sts - ts) <= 90:
+                if best is None or abs(sts - ts) < abs(int(best.get("timestamp", 0)) - ts):
+                    best = sig
+        return best
+
+    out = []
+    out.append("=" * 80)
+    out.append(f"ParraCorp - Log IA (txt)")
+    out.append(f"Total decisiones en log: {len(lines)}  |  Mostrando: {len(records)}"
+               + (f"  |  Filtro: {symbol_filter}" if symbol_filter else ""))
+    out.append(f"Generado: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+    out.append("=" * 80)
+    out.append("")
+
+    for i, r in enumerate(records, 1):
+        sym = r.get("symbol", "?")
+        g = r.get("groq", {}) or {}
+        gm = r.get("gemini", {}) or {}
+        cons = r.get("consensus", {}) or {}
+        stats_ref = r.get("stats_ref", {}) or {}
+        gp = r.get("groq_prompt", "") or ""
+        mp = r.get("gemini_prompt", "") or ""
+
+        out.append(f"######## DECISION #{i}  {r.get('time','?')} UTC  |  {sym}  ########")
+        out.append(f"Stats ref:  {stats_ref.get('action','N/A')} ({stats_ref.get('confidence',0)}%)")
+        out.append(f"Consenso:   {cons.get('action','WAIT')}  conf={cons.get('confidence',0)}  "
+                   f"[{cons.get('consensus_str','')}]")
+        out.append("")
+        out.append(f"--- GROQ respuesta ---")
+        out.append(f"  action:     {g.get('action','?')}")
+        out.append(f"  confidence: {g.get('confidence',0)}")
+        out.append(f"  sl_atr:     {g.get('sl_atr',0)}")
+        out.append(f"  tp_atr:     {g.get('tp_atr',0)}")
+        out.append(f"  analysis:   {g.get('analysis','')}")
+        out.append("")
+        out.append(f"--- GEMINI respuesta ---")
+        out.append(f"  action:     {gm.get('action','?')}")
+        out.append(f"  confidence: {gm.get('confidence',0)}")
+        out.append(f"  sl_atr:     {gm.get('sl_atr',0)}")
+        out.append(f"  tp_atr:     {gm.get('tp_atr',0)}")
+        out.append(f"  reason:     {gm.get('reason','')}")
+        out.append("")
+
+        if gp:
+            out.append("--- PROMPT ENVIADO A GROQ ---")
+            out.append(gp)
+            out.append("")
+        if mp:
+            out.append("--- PROMPT ENVIADO A GEMINI ---")
+            out.append(mp)
+            out.append("")
+
+        sig = find_signal(r)
+        if sig:
+            out.append("--- OPERACION ABIERTA TRAS ESTA DECISION ---")
+            out.append(f"  id:         {sig.get('id','?')}")
+            out.append(f"  action:     {sig.get('action','?')}")
+            out.append(f"  entry:      {sig.get('entry_price',0)}")
+            out.append(f"  sl:         {sig.get('sl',0)}")
+            out.append(f"  tp:         {sig.get('tp',0)}")
+            out.append(f"  lote:       {sig.get('lote',0)}  lote_std={sig.get('lote_std',0)}")
+            out.append(f"  riesgo_usd: {sig.get('riesgo_usd',0)}")
+            out.append(f"  tqs:        {sig.get('trade_quality_score',0)}")
+            out.append(f"  regimen:    {sig.get('regimen','')}")
+            out.append(f"  status:     {sig.get('status','?')}")
+            if sig.get("status") in ("HIT_TP", "HIT_SL", "TRAILING_CLOSE"):
+                out.append(f"  exit:       {sig.get('exit_price',0)}")
+                out.append(f"  pnl_pct:    {sig.get('pnl_pct',0):+.2f}%")
+                out.append(f"  pnl_usd:    {sig.get('pnl_usd',0):+.2f}")
+            out.append("")
+        else:
+            out.append("(Sin operacion abierta en ventana +/-90s tras esta decision)")
+            out.append("")
+
+        out.append("")
+
+    body = "\n".join(out)
+    fname = f"ia_log{'_'+symbol_filter if symbol_filter else ''}_{time.strftime('%Y%m%d_%H%M')}.txt"
+    return Response(
+        body,
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 # === Config ===
 
 @app.route("/config", methods=["POST"])

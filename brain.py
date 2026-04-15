@@ -28,15 +28,23 @@ from symbol_memory import (
 # --- Log de decisiones IA (descargable) ---
 IA_DECISIONS_LOG = data_path("ia_decisions.jsonl")
 
+# Cache en memoria del ultimo prompt enviado por (modelo, symbol). Se lee desde
+# _log_ia_decision para guardar el prompt completo con cada decision.
+_last_prompts = {}
+
 
 def _log_ia_decision(symbol, groq_result, gemini_result, consensus, prompt_summary, stats_context=None):
     """Registra cada decision de IA en ia_decisions.jsonl para auditoria."""
     try:
+        groq_prompt = _last_prompts.pop("groq:" + symbol, "")
+        gemini_prompt = _last_prompts.pop("gemini:" + symbol, "")
         record = {
             "ts": int(time.time()),
             "time": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
             "symbol": symbol,
             "prompt_summary": prompt_summary,
+            "groq_prompt": groq_prompt,
+            "gemini_prompt": gemini_prompt,
             "groq": {
                 "action": groq_result.get("action", "FAIL") if groq_result else "FAIL",
                 "confidence": groq_result.get("confidence", 0) if groq_result else 0,
@@ -748,6 +756,7 @@ Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
+    _last_prompts["groq:" + symbol] = prompt
     result = _call_groq(prompt, max_tokens=300)
     if not result:
         return None
@@ -947,6 +956,7 @@ Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"reason":"1 frase"}}"""
 
     log("GEMINI", f"{symbol} Prompt enviado ({len(prompt)} chars)")
+    _last_prompts["gemini:" + symbol] = prompt
     result = _call_gemini(prompt, max_tokens=300)
     if not result:
         return None
