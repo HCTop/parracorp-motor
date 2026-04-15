@@ -20,6 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from config import GROQ_KEYS, GEMINI_KEYS, CRYPTO, state, lock, log, data_path, tipo_activo
 from portfolio_risk import check_correlacion
+from symbol_memory import (
+    get_symbol_memory, format_symbol_memory,
+    get_day_memory, format_day_memory,
+)
 
 # --- Log de decisiones IA (descargable) ---
 IA_DECISIONS_LOG = data_path("ia_decisions.jsonl")
@@ -694,10 +698,16 @@ def modelo_groq(symbol, snapshot, engines_result, context, htf_trend="N/A", sr_i
                       f"Razon: {stats_result.get('reason', 'N/A')}\n"
                       f"NOTA: Es solo una referencia. Tu decides independientemente.")
 
+    # Memoria por simbolo (ultimos 30 dias) y estado del dia
+    mem_text = format_symbol_memory(get_symbol_memory(symbol, days=30, min_trades=5))
+    capital_actual = state.get("capital", 0) if isinstance(state, dict) else 0
+    day_text = format_day_memory(get_day_memory(), capital_actual)
+
     prompt = f"""Eres un trader profesional analizando {symbol} en timeframe 1H.
 
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
+Capital actual: {capital_actual} USD
 
 === DATOS DEL MERCADO ===
 {interpretation}
@@ -705,16 +715,36 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 === ULTIMAS 8 VELAS ===
 {snapshot.get('hist_chart', 'No disponible')}
 {stats_text}
+{mem_text}
+{day_text}
 
 === TU TAREA ===
-Analiza los datos y decide libremente. Presta especial atencion a:
-- Estocastico K/D: sobrecompra (>80) y sobreventa (<20) son oportunidades de entrada rapida
-- CCI extremos (>100 o <-100) y Williams %R (-80/-20) confirman zonas de agotamiento
-- Cruces de K sobre D en sobreventa = BUY, K bajo D en sobrecompra = SELL
-- Puedes usar TP ajustados (1.0-2.0 ATR) para capturar movimientos rapidos
-- SL tambien puede ser ajustado (0.8-1.5 ATR) si la señal es clara
+Analiza todos los datos (incluyendo tu historial con este simbolo y el estado
+del dia) y decide: BUY, SELL o WAIT. Tu decision es independiente.
 
-Responde BUY, SELL o WAIT. Confianza 0-100.
+ADAPTA TU ESTILO AL REGIMEN ACTUAL ({regimen}):
+- TRENDING / TRENDING_CALM / TRENDING_VOLATILE: sigue la direccion principal.
+  TP amplios (2.5-4 ATR), SL 1.5-2 ATR. Evita entradas contra-tendencia.
+- RANGING: busca reversion en extremos. Estocastico >80/<20, CCI >100/<-100,
+  Williams %R -80/-20 son oportunidades. TP ajustados (1.5-2 ATR).
+- CHOPPY / QUIET: se muy selectivo. Solo setups A+ con alta confluencia o WAIT.
+- NORMAL / VOLATILE: exige confluencia entre varios indicadores antes de entrar.
+
+GESTION DEL RIESGO DIARIO (si hay datos del dia):
+- Si el PnL del dia ya esta negativo >5% del capital, exige setup A+ (ADX>20,
+  MTF alineado, TQS alto). Si dudas, WAIT.
+- Si el PnL del dia esta negativo >8%, WAIT salvo confluencia excepcional.
+- Si llevas racha de 3+ perdidas consecutivas en este simbolo, exige mas
+  confluencia antes de volver a entrar en el mismo.
+
+CONSIDERACION DEL COSTE (informativo, NO es restriccion de simbolos):
+Con capital pequeño, el broker obliga a lote minimo 0.01. Esto hace que cada
+simbolo tenga un coste USD distinto por trade segun el contrato (ver
+"Perdida media" de tu historial, que es el coste real observado). Esto NO
+limita que simbolos puedes operar; es informacion para que valores cada
+setup por su calidad real frente a su coste esperado.
+
+Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
@@ -860,12 +890,18 @@ def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, h
                       f"Razon: {stats_result.get('reason', 'N/A')}\n"
                       f"NOTA: Es solo una referencia. Tu decides independientemente.")
 
+    # Memoria por simbolo (ultimos 30 dias) y estado del dia
+    mem_text = format_symbol_memory(get_symbol_memory(symbol, days=30, min_trades=5))
+    capital_actual = state.get("capital", 0) if isinstance(state, dict) else 0
+    day_text = format_day_memory(get_day_memory(), capital_actual)
+
     prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
 
 Eres un trader profesional analizando {symbol} en timeframe 1H.
 
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
+Capital actual: {capital_actual} USD
 
 === DATOS DEL MERCADO ===
 {interpretation}
@@ -877,16 +913,37 @@ Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('qu
 {news_text}
 Sentimiento: {news.get('sentiment','neutral')}
 {stats_text}
+{mem_text}
+{day_text}
 
 === TU TAREA ===
-Analiza los datos y las noticias, y decide libremente. Presta especial atencion a:
-- Estocastico K/D: sobrecompra (>80) y sobreventa (<20) son oportunidades de entrada rapida
-- CCI extremos (>100 o <-100) y Williams %R (-80/-20) confirman zonas de agotamiento
-- Cruces de K sobre D en sobreventa = BUY, K bajo D en sobrecompra = SELL
-- Puedes usar TP ajustados (1.0-2.0 ATR) para capturar movimientos rapidos
-- SL tambien puede ser ajustado (0.8-1.5 ATR) si la señal es clara
+Analiza todos los datos y las noticias (incluyendo tu historial con este
+simbolo y el estado del dia) y decide: BUY, SELL o WAIT. Tu decision es
+independiente.
 
-Responde BUY, SELL o WAIT. Confianza 0-100.
+ADAPTA TU ESTILO AL REGIMEN ACTUAL ({regimen}):
+- TRENDING / TRENDING_CALM / TRENDING_VOLATILE: sigue la direccion principal.
+  TP amplios (2.5-4 ATR), SL 1.5-2 ATR. Evita entradas contra-tendencia.
+- RANGING: busca reversion en extremos. Estocastico >80/<20, CCI >100/<-100,
+  Williams %R -80/-20 son oportunidades. TP ajustados (1.5-2 ATR).
+- CHOPPY / QUIET: se muy selectivo. Solo setups A+ con alta confluencia o WAIT.
+- NORMAL / VOLATILE: exige confluencia entre varios indicadores antes de entrar.
+
+GESTION DEL RIESGO DIARIO (si hay datos del dia):
+- Si el PnL del dia ya esta negativo >5% del capital, exige setup A+ (ADX>20,
+  MTF alineado, TQS alto). Si dudas, WAIT.
+- Si el PnL del dia esta negativo >8%, WAIT salvo confluencia excepcional.
+- Si llevas racha de 3+ perdidas consecutivas en este simbolo, exige mas
+  confluencia antes de volver a entrar en el mismo.
+
+CONSIDERACION DEL COSTE (informativo, NO es restriccion de simbolos):
+Con capital pequeño, el broker obliga a lote minimo 0.01. Esto hace que cada
+simbolo tenga un coste USD distinto por trade segun el contrato (ver
+"Perdida media" de tu historial, que es el coste real observado). Esto NO
+limita que simbolos puedes operar; es informacion para que valores cada
+setup por su calidad real frente a su coste esperado.
+
+Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"reason":"1 frase"}}"""
 
     log("GEMINI", f"{symbol} Prompt enviado ({len(prompt)} chars)")
