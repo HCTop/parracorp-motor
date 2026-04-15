@@ -112,8 +112,9 @@ def send_close(token, signal):
         return
     status = signal.get("status", "?")
     pnl = signal.get("pnl_pct", 0) or 0
-    icon = "+" if pnl >= 0 else ""
-    title = f"{status} {signal.get('symbol', '?')} {icon}{pnl:.2f}%"
+    # Tick verde si cerro en positivo (aunque status sea HIT_SL por SL movido a BE+)
+    icon = "✅" if pnl >= 0 else "❌"
+    title = f"{icon} {signal.get('symbol', '?')} {pnl:+.2f}%"
     body = f"Entrada: {signal.get('entry_price', 0)} > Salida: {signal.get('exit_price', 0)}"
     send(token, title, body, signal_type="close")
 
