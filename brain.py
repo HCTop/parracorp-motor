@@ -1345,21 +1345,17 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
     groq_result = None
     gemini_result = None
 
-    # IA solo opera en TF 1H y si TQS minimo para no gastar API gratis
-    usa_ia = (ia_modo != "off") and (tf_val == "60") and (tqs >= 0.30 or direction != "NEUTRAL")
+    # IA solo opera en TF 1H
+    usa_ia = (ia_modo != "off") and (tf_val == "60")
 
     if not usa_ia:
         if ia_modo == "off":
             log("BRAIN", f"{symbol} IA APAGADA - no se emiten senales")
             result["reason"] = "IA apagada"
             return result
-        elif tf_val != "60":
+        else:
             log("BRAIN", f"{symbol} TF={tf_val} != 1H, skip")
             result["reason"] = f"TF={tf_val} != 1H"
-            return result
-        else:
-            log("BRAIN", f"{symbol} TQS={tqs:.2f} bajo + DIR={direction} -> skip IA (ahorro API)")
-            result["reason"] = f"TQS={tqs:.2f} bajo, sin senal clara"
             return result
     else:
         # === MODELO B: Groq + Gemini deciden en PARALELO ===
