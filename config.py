@@ -40,9 +40,6 @@ GROQ_KEYS = [k for k in [
 
 GEMINI_KEYS = [k for k in [
     os.environ.get("GEMINI_API_KEY", ""),
-    os.environ.get("GEMINI_KEY2", ""),
-    os.environ.get("GEMINI_KEY3", ""),
-    os.environ.get("GEMINI_KEY4", ""),
 ] if k]
 
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "")

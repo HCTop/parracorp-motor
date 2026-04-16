@@ -1345,19 +1345,21 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
     groq_result = None
     gemini_result = None
 
-    # IA solo opera en TF 1H. Otros TFs usan Stats como fallback.
-    usa_ia = (ia_modo != "off") and (tf_val == "60")
+    # IA solo opera en TF 1H y si TQS minimo para no gastar API gratis
+    usa_ia = (ia_modo != "off") and (tf_val == "60") and (tqs >= 0.30 or direction != "NEUTRAL")
 
     if not usa_ia:
         if ia_modo == "off":
-            # IA apagada = no operar. Motor detenido.
             log("BRAIN", f"{symbol} IA APAGADA - no se emiten senales")
             result["reason"] = "IA apagada"
             return result
-        else:
-            # TF != 1H: no llamar a IA (solo opera en 1H)
+        elif tf_val != "60":
             log("BRAIN", f"{symbol} TF={tf_val} != 1H, skip")
             result["reason"] = f"TF={tf_val} != 1H"
+            return result
+        else:
+            log("BRAIN", f"{symbol} TQS={tqs:.2f} bajo + DIR={direction} -> skip IA (ahorro API)")
+            result["reason"] = f"TQS={tqs:.2f} bajo, sin senal clara"
             return result
     else:
         # === MODELO B: Groq + Gemini deciden en PARALELO ===
@@ -1386,10 +1388,10 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
                 )
                 groq_result = future_groq.result()
                 gemini_result = future_gemini.result()
-            time.sleep(3)
+            time.sleep(5)
         elif usar_groq:
             groq_result = modelo_groq(symbol, snapshot, engines_result, context, htf_trend, sr_info)
-            time.sleep(3)
+            time.sleep(5)
         elif usar_gemini:
             gemini_result = modelo_gemini(symbol, snapshot, engines_result, context, None, htf_trend, sr_info)
 
