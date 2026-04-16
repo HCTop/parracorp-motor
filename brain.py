@@ -444,8 +444,8 @@ def _call_groq(prompt, max_tokens=400):
             timeout=15,
         )
         if r.status_code == 429:
-            log("GROQ", "Rate limited, rotando key")
-            # Reintentar con siguiente key
+            log("GROQ", "Rate limited, esperando 5s + rotando key")
+            time.sleep(5)
             key2 = _next_groq_key()
             if key2:
                 r = requests.post(
@@ -851,6 +851,10 @@ def _call_gemini(prompt, max_tokens=400):
                     log("GEMINI", f"Key {key[:8]}... quota 429")
                     time.sleep(1)
                     continue
+                if r.status_code in (500, 502, 503):
+                    log("GEMINI", f"Key {key[:8]}... HTTP {r.status_code}, reintento en 3s")
+                    time.sleep(3)
+                    r = requests.post(url, json=payload, timeout=30)
                 if r.status_code != 200:
                     log("GEMINI", f"Key {key[:8]}... HTTP {r.status_code}")
                     continue
