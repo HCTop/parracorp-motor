@@ -1408,7 +1408,9 @@ def signal_share_history():
 
     now = _time.time()
     if period == "day":
-        cutoff = now - 86400
+        from datetime import datetime as _dt
+        midnight = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = midnight.timestamp()
         label = "Hoy"
     elif period == "week":
         cutoff = now - 7 * 86400
@@ -1420,7 +1422,8 @@ def signal_share_history():
         cutoff = 0
         label = "Completo"
 
-    filtered = [t for t in history if t.get("timestamp", 0) >= cutoff]
+    filtered = [t for t in history
+                if (t.get("exit_ts") or t.get("timestamp", 0)) >= cutoff]
     tg.send_history_summary(filtered, label)
     wa.send_history_summary(filtered, label)
     return jsonify({"ok": True, "trades": len(filtered), "period": period})
