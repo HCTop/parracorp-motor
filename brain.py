@@ -1111,6 +1111,42 @@ def _consensus_vote_v4(groq_result, gemini_result, stats_result,
     - Ambas WAIT                  -> WAIT
     - Alguna falla (None)         -> WAIT
     """
+    ia_motores = state.get("ia_motores", "ambas") if isinstance(state, dict) else "ambas"
+
+    # Modo single IA: si solo hay una, decide ella sola
+    if ia_motores == "solo_groq" and groq_result:
+        v = groq_result.get("action", "WAIT").upper()
+        c = int(groq_result.get("confidence", 0))
+        if v in ("BUY", "SELL") and c < 50:
+            v, c = "WAIT", 0
+        return {
+            "action": v, "confidence": c,
+            "sl_atr": float(groq_result.get("sl_atr", 1.5)),
+            "tp_atr": float(groq_result.get("tp_atr", 3.0)),
+            "risk_pct": round(min(max(float(groq_result.get("risk_pct", 1.0)), 0.5), 2.0), 2),
+            "trailing_stop": groq_result.get("trailing_stop", "none"),
+            "reason": f"[solo_groq] {groq_result.get('reason', '')}",
+            "votos": {"groq": {"action": v, "confidence": c},
+                      "stats": {"action": stats_result.get("action", "WAIT"), "confidence": stats_result.get("confidence", 0)}},
+            "consensus": f"1/1 [Groq:{v}]",
+        }
+    if ia_motores == "solo_gemini" and gemini_result:
+        v = gemini_result.get("action", "WAIT").upper()
+        c = int(gemini_result.get("confidence", 0))
+        if v in ("BUY", "SELL") and c < 50:
+            v, c = "WAIT", 0
+        return {
+            "action": v, "confidence": c,
+            "sl_atr": float(gemini_result.get("sl_atr", 1.5)),
+            "tp_atr": float(gemini_result.get("tp_atr", 3.0)),
+            "risk_pct": round(min(max(float(gemini_result.get("risk_pct", 1.0)), 0.5), 2.0), 2),
+            "trailing_stop": gemini_result.get("trailing_stop", "none"),
+            "reason": f"[solo_gemini] {gemini_result.get('reason', '')}",
+            "votos": {"gemini": {"action": v, "confidence": c},
+                      "stats": {"action": stats_result.get("action", "WAIT"), "confidence": stats_result.get("confidence", 0)}},
+            "consensus": f"1/1 [Gemini:{v}]",
+        }
+
     # Si alguna IA fallo, no operar
     if not groq_result or not gemini_result:
         failed = []
@@ -1331,17 +1367,31 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             return result
         _last_call_ts = now
 
-        log("BRAIN", f"{symbol} Modelo B: lanzando Groq + Gemini en paralelo")
+        ia_motores = state.get("ia_motores", "ambas") if isinstance(state, dict) else "ambas"
+        usar_groq = ia_motores in ("ambas", "solo_groq")
+        usar_gemini = ia_motores in ("ambas", "solo_gemini")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_groq = executor.submit(
-                modelo_groq, symbol, snapshot, engines_result, context, htf_trend, sr_info
-            )
-            future_gemini = executor.submit(
-                modelo_gemini, symbol, snapshot, engines_result, context, None, htf_trend, sr_info
-            )
-            groq_result = future_groq.result()
-            gemini_result = future_gemini.result()
+        log("BRAIN", f"{symbol} Modelo B: motores={ia_motores}")
+
+        groq_result = None
+        gemini_result = None
+
+        if usar_groq and usar_gemini:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_groq = executor.submit(
+                    modelo_groq, symbol, snapshot, engines_result, context, htf_trend, sr_info
+                )
+                future_gemini = executor.submit(
+                    modelo_gemini, symbol, snapshot, engines_result, context, None, htf_trend, sr_info
+                )
+                groq_result = future_groq.result()
+                gemini_result = future_gemini.result()
+            time.sleep(3)
+        elif usar_groq:
+            groq_result = modelo_groq(symbol, snapshot, engines_result, context, htf_trend, sr_info)
+            time.sleep(3)
+        elif usar_gemini:
+            gemini_result = modelo_gemini(symbol, snapshot, engines_result, context, None, htf_trend, sr_info)
 
         log("BRAIN", f"{symbol} Groq={'FAIL' if not groq_result else groq_result.get('action','?')} "
             f"Gemini={'FAIL' if not gemini_result else gemini_result.get('action','?')}")

@@ -1186,6 +1186,7 @@ def _build_estado(sym, tf):
         "capital": cfg.state["capital"],
         "riesgo_pct": cfg.state["riesgo_pct"],
         "ia_modo": cfg.state.get("ia_modo", "off"),
+        "ia_motores": cfg.state.get("ia_motores", "ambas"),
         "ia_modelo": ia_modelo_actual or cfg.state.get("ia_modelo", ""),
         "ia_tokens": ia_tokens,
         "modo_conservador": cfg.state.get("modo_conservador", False),
@@ -1637,7 +1638,7 @@ def ia_log_txt():
 @app.route("/config", methods=["POST"])
 def update_config():
     data = request.json or {}
-    for key in ["capital", "riesgo_pct", "rr_minimo", "apalancamiento", "avoid_swap"]:
+    for key in ["capital", "riesgo_pct", "rr_minimo", "apalancamiento", "avoid_swap", "ia_motores"]:
         if key in data:
             cfg.state[key] = data[key]
     if "watchlist" in data:
@@ -2156,6 +2157,7 @@ def health():
         "version": "3.2",
         "motor_activo": cfg.state.get("motor_activo", True),
         "ia_modo": cfg.state.get("ia_modo", "off"),
+        "ia_motores": cfg.state.get("ia_motores", "ambas"),
         "motor_ok": cfg.state.get("motor_ok", False),
     })
 

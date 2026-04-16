@@ -215,6 +215,7 @@ state = {
     # IA
     "ia_modo": "autonomo",  # "autonomo" = IA activa, "off" = solo modelo estadistico
     "ia_modelo": "gemini-2.5-flash",
+    "ia_motores": "ambas",  # "ambas", "solo_groq", "solo_gemini"
     # Estado
     "daily_pnl": 0.0,
     "daily_reset_ts": 0,
@@ -268,7 +269,7 @@ def guardar():
             json.dump({k: state[k] for k in [
                 "motor_activo", "capital", "riesgo_pct", "max_ops", "rr_minimo",
                 "watchlist", "watchlist_opcional",
-                "ia_modo",
+                "ia_modo", "ia_motores",
                 "push_token", "modo_conservador", "apalancamiento", "avoid_swap", "divisa_base",
             ]}, f, indent=2)
     except Exception as e:
