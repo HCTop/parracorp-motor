@@ -525,7 +525,7 @@ class TVStream:
         macd_sig = _safe(last.get(_col(df, "MACDs_")))
         macd_hist = _safe(last.get(_col(df, "MACDh_")))
         adx = _safe(last.get(_col(df, "ADX_")))
-        cci = _safe(last.get(_col(df, "CCI_")))
+        cci = max(-500, min(500, _safe(last.get(_col(df, "CCI_")))))
         willr = _safe(last.get(_col(df, "WILLR_")), -50)
         mom = _safe(last.get(_col(df, "MOM_")))
         ao = _safe(last.get(_col(df, "AO_")))

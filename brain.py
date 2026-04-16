@@ -711,7 +711,26 @@ def modelo_groq(symbol, snapshot, engines_result, context, htf_trend="N/A", sr_i
     capital_actual = state.get("capital", 0) if isinstance(state, dict) else 0
     day_text = format_day_memory(get_day_memory(), capital_actual)
 
-    prompt = f"""Eres un trader profesional analizando {symbol} en timeframe 1H.
+    prompt = f"""RESPONDE UNICAMENTE CON JSON VALIDO.
+
+Eres un trader profesional analizando {symbol} en timeframe 1H.
+
+=== REGLAS OBLIGATORIAS (lee esto ANTES de analizar) ===
+1. GESTION DEL RIESGO DIARIO:
+   - PnL del dia negativo >5% del capital -> SOLO operar setups A+ (ADX>20,
+     confluencia de 3+ indicadores alineados). Si dudas, WAIT.
+   - PnL del dia negativo >8% -> WAIT obligatorio salvo confluencia excepcional.
+   - Racha de 3+ perdidas consecutivas en este simbolo -> exige mas confluencia.
+2. SOBRECOMPRA/SOBREVENTA: si Estocastico >80 o Williams %R >-20, NO comprar.
+   Si Estocastico <20 o Williams %R <-80, NO vender. Respeta estas senales.
+3. REGIMEN ({regimen}):
+   - TRENDING/TRENDING_CALM/TRENDING_VOLATILE: sigue direccion principal.
+     TP amplios (2.5-4 ATR), SL 1.5-2 ATR. No entrar contra-tendencia.
+   - RANGING: reversion en extremos. TP ajustados (1.5-2 ATR).
+   - CHOPPY/QUIET: solo setups A+ con alta confluencia o WAIT.
+   - NORMAL/VOLATILE: exige confluencia entre varios indicadores antes de entrar.
+4. COSTE (informativo, NO restringe simbolos): con capital pequeno y lote minimo
+   0.01, cada simbolo tiene coste USD distinto. Valora calidad del setup vs coste.
 
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
@@ -729,28 +748,7 @@ Capital actual: {capital_actual} USD
 === TU TAREA ===
 Analiza todos los datos (incluyendo tu historial con este simbolo y el estado
 del dia) y decide: BUY, SELL o WAIT. Tu decision es independiente.
-
-ADAPTA TU ESTILO AL REGIMEN ACTUAL ({regimen}):
-- TRENDING / TRENDING_CALM / TRENDING_VOLATILE: sigue la direccion principal.
-  TP amplios (2.5-4 ATR), SL 1.5-2 ATR. Evita entradas contra-tendencia.
-- RANGING: busca reversion en extremos. Estocastico >80/<20, CCI >100/<-100,
-  Williams %R -80/-20 son oportunidades. TP ajustados (1.5-2 ATR).
-- CHOPPY / QUIET: se muy selectivo. Solo setups A+ con alta confluencia o WAIT.
-- NORMAL / VOLATILE: exige confluencia entre varios indicadores antes de entrar.
-
-GESTION DEL RIESGO DIARIO (si hay datos del dia):
-- Si el PnL del dia ya esta negativo >5% del capital, exige setup A+ (ADX>20,
-  MTF alineado, TQS alto). Si dudas, WAIT.
-- Si el PnL del dia esta negativo >8%, WAIT salvo confluencia excepcional.
-- Si llevas racha de 3+ perdidas consecutivas en este simbolo, exige mas
-  confluencia antes de volver a entrar en el mismo.
-
-CONSIDERACION DEL COSTE (informativo, NO es restriccion de simbolos):
-Con capital pequeño, el broker obliga a lote minimo 0.01. Esto hace que cada
-simbolo tenga un coste USD distinto por trade segun el contrato (ver
-"Perdida media" de tu historial, que es el coste real observado). Esto NO
-limita que simbolos puedes operar; es informacion para que valores cada
-setup por su calidad real frente a su coste esperado.
+Revisa las REGLAS OBLIGATORIAS de arriba antes de decidir.
 
 Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"analysis":"1 frase"}}
@@ -908,6 +906,23 @@ def modelo_gemini(symbol, snapshot, engines_result, context, groq_result=None, h
 
 Eres un trader profesional analizando {symbol} en timeframe 1H.
 
+=== REGLAS OBLIGATORIAS (lee esto ANTES de analizar) ===
+1. GESTION DEL RIESGO DIARIO:
+   - PnL del dia negativo >5% del capital -> SOLO operar setups A+ (ADX>20,
+     confluencia de 3+ indicadores alineados). Si dudas, WAIT.
+   - PnL del dia negativo >8% -> WAIT obligatorio salvo confluencia excepcional.
+   - Racha de 3+ perdidas consecutivas en este simbolo -> exige mas confluencia.
+2. SOBRECOMPRA/SOBREVENTA: si Estocastico >80 o Williams %R >-20, NO comprar.
+   Si Estocastico <20 o Williams %R <-80, NO vender. Respeta estas senales.
+3. REGIMEN ({regimen}):
+   - TRENDING/TRENDING_CALM/TRENDING_VOLATILE: sigue direccion principal.
+     TP amplios (2.5-4 ATR), SL 1.5-2 ATR. No entrar contra-tendencia.
+   - RANGING: reversion en extremos. TP ajustados (1.5-2 ATR).
+   - CHOPPY/QUIET: solo setups A+ con alta confluencia o WAIT.
+   - NORMAL/VOLATILE: exige confluencia entre varios indicadores antes de entrar.
+4. COSTE (informativo, NO restringe simbolos): con capital pequeno y lote minimo
+   0.01, cada simbolo tiene coste USD distinto. Valora calidad del setup vs coste.
+
 {symbol} | Precio={precio} | ATR={atr} ({snapshot.get('atr_pct',0):.2f}%)
 Regimen: {regimen} | Sesion: {session.get('name','?')} (calidad {session.get('quality',0)}/5)
 Capital actual: {capital_actual} USD
@@ -929,28 +944,7 @@ Sentimiento: {news.get('sentiment','neutral')}
 Analiza todos los datos y las noticias (incluyendo tu historial con este
 simbolo y el estado del dia) y decide: BUY, SELL o WAIT. Tu decision es
 independiente.
-
-ADAPTA TU ESTILO AL REGIMEN ACTUAL ({regimen}):
-- TRENDING / TRENDING_CALM / TRENDING_VOLATILE: sigue la direccion principal.
-  TP amplios (2.5-4 ATR), SL 1.5-2 ATR. Evita entradas contra-tendencia.
-- RANGING: busca reversion en extremos. Estocastico >80/<20, CCI >100/<-100,
-  Williams %R -80/-20 son oportunidades. TP ajustados (1.5-2 ATR).
-- CHOPPY / QUIET: se muy selectivo. Solo setups A+ con alta confluencia o WAIT.
-- NORMAL / VOLATILE: exige confluencia entre varios indicadores antes de entrar.
-
-GESTION DEL RIESGO DIARIO (si hay datos del dia):
-- Si el PnL del dia ya esta negativo >5% del capital, exige setup A+ (ADX>20,
-  MTF alineado, TQS alto). Si dudas, WAIT.
-- Si el PnL del dia esta negativo >8%, WAIT salvo confluencia excepcional.
-- Si llevas racha de 3+ perdidas consecutivas en este simbolo, exige mas
-  confluencia antes de volver a entrar en el mismo.
-
-CONSIDERACION DEL COSTE (informativo, NO es restriccion de simbolos):
-Con capital pequeño, el broker obliga a lote minimo 0.01. Esto hace que cada
-simbolo tenga un coste USD distinto por trade segun el contrato (ver
-"Perdida media" de tu historial, que es el coste real observado). Esto NO
-limita que simbolos puedes operar; es informacion para que valores cada
-setup por su calidad real frente a su coste esperado.
+Revisa las REGLAS OBLIGATORIAS de arriba antes de decidir.
 
 Confianza 0-100.
 JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"reason":"1 frase"}}"""
