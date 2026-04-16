@@ -81,6 +81,9 @@ _gemini_good_idx = None
 _last_call_ts = 0
 _MIN_INTERVAL = 1
 
+# --- Estado de salud de las IAs (ultimo ciclo) ---
+ia_health = {"groq_ok": 0, "groq_fail": 0, "gemini_ok": 0, "gemini_fail": 0}
+
 # --- Contadores de tokens (persistente) ---
 _TOKENS_FILE = data_path("ia_tokens.json")
 ia_tokens = {"groq": 0, "gemini": 0}
@@ -1394,6 +1397,11 @@ def analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, o
             time.sleep(5)
         elif usar_gemini:
             gemini_result = modelo_gemini(symbol, snapshot, engines_result, context, None, htf_trend, sr_info)
+
+        if usar_groq:
+            ia_health["groq_ok" if groq_result else "groq_fail"] += 1
+        if usar_gemini:
+            ia_health["gemini_ok" if gemini_result else "gemini_fail"] += 1
 
         log("BRAIN", f"{symbol} Groq={'FAIL' if not groq_result else groq_result.get('action','?')} "
             f"Gemini={'FAIL' if not gemini_result else gemini_result.get('action','?')}")

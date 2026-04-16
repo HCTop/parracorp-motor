@@ -30,7 +30,7 @@ from data_feed import (get_snapshot, get_price, get_ohlcv, get_htf_trend,
 from market_context import (get_full_context, get_session, get_calendar,
                             get_session_countdown, get_news_data, get_upcoming_events,
                             check_bank_holiday)
-from brain import analyze as brain_analyze, ia_tokens, ia_modelo_actual
+from brain import analyze as brain_analyze, ia_tokens, ia_modelo_actual, ia_health
 from risk_engine import calcular_lote, validar_senal, ajustar_riesgo_por_regimen
 from signals import (emit as emit_signal, check_prices, get_active, get_history,
                      get_stats, cancel as cancel_signal, close_signal, vote as vote_signal,
@@ -675,6 +675,8 @@ def _full_scan_loop():
                 continue
 
             total = len(symbols) * len(_SCAN_TIMEFRAMES)
+            from brain import ia_health
+            ia_health.update({"groq_ok": 0, "groq_fail": 0, "gemini_ok": 0, "gemini_fail": 0})
             mlog("SCAN", f"Escaneo completo: {len(symbols)} pares x {len(_SCAN_TIMEFRAMES)} TFs = {total}")
             _last_full_scan = time.time()
 
@@ -1189,6 +1191,7 @@ def _build_estado(sym, tf):
         "ia_motores": cfg.state.get("ia_motores", "ambas"),
         "ia_modelo": ia_modelo_actual or cfg.state.get("ia_modelo", ""),
         "ia_tokens": ia_tokens,
+        "ia_health": ia_health,
         "modo_conservador": cfg.state.get("modo_conservador", False),
         "fallos_consecutivos": cfg.state.get("fallos_consecutivos", 0),
         # Datos mercado
