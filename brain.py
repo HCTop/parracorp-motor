@@ -214,20 +214,21 @@ def _sl_tp_por_activo(symbol, vol_ratio=1.0):
 
     sym = symbol.upper().replace("/", "")
 
-    # Base optimizada por par (backtest alineado 360d, abril 2026)
+    # Base optimizada por par (ajustado con datos reales abril 2026)
     _OPTIMAL = {
-        # Metales (prioridad alta)
-        "XAUUSD": (2.2, 4.5),   # PF 1.67, WR 51.5%, +52.8%
-        "XAGUSD": (1.8, 4.5),   # PF 1.52, WR 48.8%, +52.6%
-        # Crypto (prioridad alta)
-        "BTCUSD": (2.0, 3.5),   # PF 1.50, WR 54.5%, +35.1%
-        "SOLUSD": (1.8, 4.0),   # PF 1.61, WR 48.9%, +66.0%
-        "ETHUSD": (1.8, 4.0),   # PF 1.72, WR 49.0%, +104.6%
-        # Forex
-        "GBPJPY": (1.5, 3.0),   # PF 1.74, WR 56.9%, +24.0%
-        "EURUSD": (1.5, 2.0),   # PF 1.29, WR 53.4%, +15.7%
-        "GBPUSD": (1.5, 2.5),
-        "USDJPY": (1.5, 2.5),
+        # Metales — ATR alto, necesitan algo mas de espacio
+        "XAUUSD": (1.0, 1.8),   # SL ajustado, TP alcanzable en 1H
+        "XAGUSD": (1.0, 1.8),   # Similar a XAU en comportamiento
+        # Crypto
+        "BTCUSD": (1.2, 2.0),
+        "SOLUSD": (1.0, 1.8),
+        "ETHUSD": (1.0, 1.8),
+        # Forex — menor ATR, movimientos mas predecibles
+        "GBPJPY": (0.8, 1.5),   # Par mas rentable, TP cercano funciona bien
+        "NZDJPY": (0.8, 1.5),   # Similar a GBPJPY
+        "EURUSD": (0.8, 1.3),
+        "GBPUSD": (0.8, 1.5),
+        "USDJPY": (0.8, 1.5),
     }
 
     if sym in _OPTIMAL:
@@ -235,15 +236,15 @@ def _sl_tp_por_activo(symbol, vol_ratio=1.0):
     else:
         t = tipo_activo(symbol)
         if t == "forex":
-            sl_base, tp_base = 1.5, 2.5
+            sl_base, tp_base = 0.8, 1.5
         elif t == "metal":
-            sl_base, tp_base = 1.8, 3.5
+            sl_base, tp_base = 1.0, 1.8
         elif t == "crypto":
-            sl_base, tp_base = 2.0, 3.5
+            sl_base, tp_base = 1.0, 1.8
         elif t in ("indice", "commodity"):
-            sl_base, tp_base = 1.8, 3.0
+            sl_base, tp_base = 1.0, 1.8
         else:
-            sl_base, tp_base = 1.5, 2.5
+            sl_base, tp_base = 0.8, 1.5
 
     # Adaptacion por volatilidad actual
     if vol_ratio > 1.3:
@@ -728,8 +729,8 @@ Eres un trader profesional analizando {symbol} en timeframe 1H.
    Si Estocastico <20 o Williams %R <-80, NO vender. Respeta estas senales.
 3. REGIMEN ({regimen}):
    - TRENDING/TRENDING_CALM/TRENDING_VOLATILE: sigue direccion principal.
-     TP amplios (2.5-4 ATR), SL 1.5-2 ATR. No entrar contra-tendencia.
-   - RANGING: reversion en extremos. TP ajustados (1.5-2 ATR).
+     TP 1.5-2.0 ATR, SL 0.8-1.0 ATR. No entrar contra-tendencia.
+   - RANGING: reversion en extremos. TP 1.2-1.5 ATR, SL 0.8 ATR.
    - CHOPPY/QUIET: solo setups A+ con alta confluencia o WAIT.
    - NORMAL/VOLATILE: exige confluencia entre varios indicadores antes de entrar.
 4. COSTE (informativo, NO restringe simbolos): con capital pequeno y lote minimo
@@ -754,7 +755,7 @@ del dia) y decide: BUY, SELL o WAIT. Tu decision es independiente.
 Revisa las REGLAS OBLIGATORIAS de arriba antes de decidir.
 
 Confianza 0-100.
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"analysis":"1 frase"}}
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":0.8,"tp_atr":1.5,"risk_pct":1.0,"analysis":"1 frase"}}
 """
     log("GROQ", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     _last_prompts["groq:" + symbol] = prompt
@@ -923,8 +924,8 @@ Eres un trader profesional analizando {symbol} en timeframe 1H.
    Si Estocastico <20 o Williams %R <-80, NO vender. Respeta estas senales.
 3. REGIMEN ({regimen}):
    - TRENDING/TRENDING_CALM/TRENDING_VOLATILE: sigue direccion principal.
-     TP amplios (2.5-4 ATR), SL 1.5-2 ATR. No entrar contra-tendencia.
-   - RANGING: reversion en extremos. TP ajustados (1.5-2 ATR).
+     TP 1.5-2.0 ATR, SL 0.8-1.0 ATR. No entrar contra-tendencia.
+   - RANGING: reversion en extremos. TP 1.2-1.5 ATR, SL 0.8 ATR.
    - CHOPPY/QUIET: solo setups A+ con alta confluencia o WAIT.
    - NORMAL/VOLATILE: exige confluencia entre varios indicadores antes de entrar.
 4. COSTE (informativo, NO restringe simbolos): con capital pequeno y lote minimo
@@ -954,7 +955,7 @@ independiente.
 Revisa las REGLAS OBLIGATORIAS de arriba antes de decidir.
 
 Confianza 0-100.
-JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":1.5,"tp_atr":2.5,"risk_pct":1.0,"reason":"1 frase"}}"""
+JSON: {{"action":"BUY|SELL|WAIT","confidence":0-100,"sl_atr":0.8,"tp_atr":1.5,"risk_pct":1.0,"reason":"1 frase"}}"""
 
     log("GEMINI", f"{symbol} Prompt enviado ({len(prompt)} chars)")
     _last_prompts["gemini:" + symbol] = prompt

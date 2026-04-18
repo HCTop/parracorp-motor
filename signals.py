@@ -194,9 +194,11 @@ def check_prices(symbol, current_price, candle_low=None, candle_high=None):
             sl = sig["sl"]
             tp = sig["tp"]
             action = sig["action"]
-            # === Alertas TP: 50% y 70% ===
+            # === Alertas TP: 50% y 70% (solo si TP > 2 ATR = operacion larga) ===
             tp_dist = abs(tp - entry)
-            if tp_dist > 0:
+            atr = sig.get("atr", 0)
+            tp_in_atr = (tp_dist / atr) if atr > 0 else 0
+            if tp_dist > 0 and tp_in_atr >= 2.0:
                 if action == "BUY":
                     progress = (current_price - entry) / tp_dist
                 else:
