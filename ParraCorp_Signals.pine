@@ -1,0 +1,317 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
+// © ParraCorp
+
+//@version=6
+indicator("ParraCorp Signal Engines", shorttitle="ParraCorp", overlay=true, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Tipo de activo
+tipo = input.string("Metal", "Tipo de activo", options=["Forex", "Metal", "Crypto", "Otro"])
+
+// SL/TP en ATR
+sl_atr_input = input.float(1.0, "SL (ATR)", minval=0.3, maxval=3.0, step=0.1)
+tp_atr_input = input.float(1.8, "TP (ATR)", minval=0.5, maxval=5.0, step=0.1)
+
+// Umbral TQS
+umbral_auto = input.bool(true, "Umbral TQS automatico por tipo")
+umbral_manual = input.float(0.65, "Umbral TQS manual", minval=0.3, maxval=0.95, step=0.01)
+
+// Filtros
+filtro_sesion = input.bool(true, "Filtrar por sesion (solo London+NY)")
+sesion_inicio = input.int(7, "Sesion inicio (hora UTC)", minval=0, maxval=23)
+sesion_fin = input.int(22, "Sesion fin (hora UTC)", minval=0, maxval=23)
+
+// Visualizacion
+show_tqs = input.bool(true, "Mostrar TQS en panel")
+show_engines = input.bool(true, "Mostrar motores individuales")
+show_regime = input.bool(true, "Mostrar regimen")
+show_sl_tp = input.bool(true, "Mostrar SL/TP en grafico")
+show_divergence = input.bool(true, "Mostrar divergencias")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INDICADORES BASE
+// ══════════════════════════════════════════════════════════════════════════════
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+rsi14 = ta.rsi(close, 14)
+
+// Bollinger Bands
+bb_len = 20
+bb_mult = 2.0
+bb_basis = ta.sma(close, bb_len)
+bb_dev = bb_mult * ta.stdev(close, bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+bb_ancho = bb_upper - bb_lower
+
+// Z-Score
+zscore = bb_ancho > 0 ? (close - bb_basis) / (bb_dev > 0 ? bb_dev : 1.0) : 0.0
+
+// BB distance: (precio - midpoint) / ancho, rango [-1, 1]
+bb_mid = (bb_upper + bb_lower) / 2.0
+bb_distance = bb_ancho > 0 ? (close - bb_mid) / (bb_ancho / 2.0) : 0.0
+
+// Keltner Channels (para squeeze)
+kc_len = 20
+kc_mult = 1.5
+kc_basis = ta.ema(close, kc_len)
+kc_atr = ta.atr(kc_len)
+kc_upper = kc_basis + kc_mult * kc_atr
+kc_lower = kc_basis - kc_mult * kc_atr
+squeeze = bb_upper < kc_upper and bb_lower > kc_lower
+
+// ATR y vol_ratio
+atr14 = ta.atr(14)
+atr_sma20 = ta.sma(atr14, 20)
+vol_ratio = atr_sma20 > 0 ? atr14 / atr_sma20 : 1.0
+
+// ADX
+adx_len = 14
+[diPlus, diMinus, adx_val] = ta.dmi(adx_len, adx_len)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DETECCION DE REGIMEN
+// ══════════════════════════════════════════════════════════════════════════════
+
+t_fuerte = adx_val > 30
+t_debil = adx_val < 20
+alta_vol = vol_ratio > 1.5
+baja_vol = vol_ratio < 0.7
+sin_dir = ema50 > 0 ? math.abs(ema20 - ema50) / ema50 < 0.001 : false
+
+regimen_trending_volatile = t_fuerte and alta_vol
+regimen_trending_calm = t_fuerte and not alta_vol
+regimen_ranging = (t_debil and baja_vol) or (t_debil and sin_dir)
+regimen_choppy = alta_vol and t_debil
+regimen_normal = not regimen_trending_volatile and not regimen_trending_calm and not regimen_ranging and not regimen_choppy
+
+regimen_str = regimen_trending_volatile ? "TREND_VOL" : regimen_trending_calm ? "TREND_CALM" : regimen_ranging ? "RANGING" : regimen_choppy ? "CHOPPY" : "NORMAL"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOTOR 1: MOMENTUM
+// ══════════════════════════════════════════════════════════════════════════════
+
+slope_period = 5
+ema20_slope = (ema20 - ema20[slope_period]) / slope_period
+mom_price = close - close[slope_period]
+price_ref = close != 0 ? close : 1.0
+slope_norm = ema20_slope / price_ref
+mom_norm = mom_price / price_ref
+mom_raw = math.abs(slope_norm * mom_norm) * 1e6
+mom_score = math.min(mom_raw, 1.0)
+
+mom_dir_buy = ema20_slope > 0 and mom_price > 0
+mom_dir_sell = ema20_slope < 0 and mom_price < 0
+// 1 = BUY, -1 = SELL, 0 = NEUTRAL
+mom_dir = mom_dir_buy ? 1 : mom_dir_sell ? -1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOTOR 2: MEAN REVERSION
+// ══════════════════════════════════════════════════════════════════════════════
+
+rsi_ext = rsi14 > 70 ? math.max(0.0, (rsi14 - 70.0) / 30.0) : rsi14 < 30 ? math.max(0.0, (30.0 - rsi14) / 30.0) : 0.0
+rev_active = math.abs(zscore) >= 1.0 or rsi_ext > 0.0 or math.abs(bb_distance) >= 0.5
+
+z_n = math.min(math.abs(zscore) / 3.0, 1.0)
+bb_n = math.min(math.abs(bb_distance), 1.0)
+rev_score = rev_active ? 0.4 * z_n + 0.35 * bb_n + 0.25 * rsi_ext : 0.0
+
+// Direccion mean reversion (contraria al extremo)
+rev_dir = math.abs(zscore) >= 1.0 ? (zscore > 0 ? -1 : 1) : rsi14 > 70 ? -1 : rsi14 < 30 ? 1 : (zscore > 0 ? -1 : 1)
+rev_dir := rev_active ? rev_dir : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOTOR 3: CURRENCY STRENGTH (simplificado — usa DI+/DI- como proxy)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// En TradingView no tenemos currency strength real, usamos DI spread como proxy
+di_spread = diPlus - diMinus
+str_score = tipo == "Forex" ? math.min(math.abs(di_spread) / 30.0, 1.0) : 0.0
+str_dir = di_spread > 5 ? 1 : di_spread < -5 ? -1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOTOR 4: VOLATILITY BREAKOUT
+// ══════════════════════════════════════════════════════════════════════════════
+
+expansion = vol_ratio > 1.0 ? math.min((vol_ratio - 1.0) / 0.5, 1.0) : 0.0
+adx_n = adx_val > 0 ? math.min(adx_val / 50.0, 1.0) : 0.0
+
+brk_score = squeeze ? 0.5 * expansion + 0.3 * adx_n + 0.2 : vol_ratio > 1.2 and adx_val > 25 ? 0.5 * expansion + 0.5 * adx_n : vol_ratio > 1.05 and adx_val > 18 ? 0.4 * expansion + 0.4 * adx_n : adx_val > 25 ? 0.3 * adx_n : 0.0
+brk_score := math.min(brk_score, 1.0)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DIVERGENCIAS RSI
+// ══════════════════════════════════════════════════════════════════════════════
+
+div_lookback = 5
+precio_max_rec = ta.highest(close, div_lookback)
+precio_min_rec = ta.lowest(close, div_lookback)
+precio_max_ant = ta.highest(close[div_lookback], div_lookback)
+precio_min_ant = ta.lowest(close[div_lookback], div_lookback)
+
+rsi_max_rec = ta.highest(rsi14, div_lookback)
+rsi_min_rec = ta.lowest(rsi14, div_lookback)
+rsi_max_ant = ta.highest(rsi14[div_lookback], div_lookback)
+rsi_min_ant = ta.lowest(rsi14[div_lookback], div_lookback)
+
+bearish_div = precio_max_rec > precio_max_ant and rsi_max_rec < rsi_max_ant
+bullish_div = precio_min_rec < precio_min_ant and rsi_min_rec > rsi_min_ant
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TRADE QUALITY SCORE (TQS)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Pesos por regimen — Forex/Metal (con strength)
+w_mom = regimen_trending_volatile ? 0.60 : regimen_trending_calm ? 0.50 : regimen_ranging ? 0.10 : regimen_choppy ? 0.0 : 0.40
+w_rev = regimen_trending_volatile ? 0.05 : regimen_trending_calm ? 0.10 : regimen_ranging ? 0.50 : regimen_choppy ? 0.0 : 0.20
+w_str = tipo == "Forex" ? (regimen_trending_volatile ? 0.30 : regimen_trending_calm ? 0.30 : regimen_ranging ? 0.30 : 0.30) : 0.0
+w_brk = regimen_trending_volatile ? 0.05 : regimen_trending_calm ? 0.10 : regimen_ranging ? 0.10 : regimen_choppy ? 0.0 : 0.10
+
+// Ajustar pesos para no-FX (sin currency strength, redistribuir)
+w_mom_nofx = regimen_trending_volatile ? 0.65 : regimen_trending_calm ? 0.55 : regimen_ranging ? 0.15 : regimen_choppy ? 0.0 : 0.45
+w_rev_nofx = regimen_trending_volatile ? 0.10 : regimen_trending_calm ? 0.20 : regimen_ranging ? 0.55 : regimen_choppy ? 0.0 : 0.25
+w_brk_nofx = regimen_trending_volatile ? 0.25 : regimen_trending_calm ? 0.25 : regimen_ranging ? 0.30 : regimen_choppy ? 0.0 : 0.30
+
+final_w_mom = tipo == "Forex" ? w_mom : w_mom_nofx
+final_w_rev = tipo == "Forex" ? w_rev : w_rev_nofx
+final_w_str = w_str
+final_w_brk = tipo == "Forex" ? w_brk : w_brk_nofx
+
+tqs_raw = regimen_choppy ? 0.0 : final_w_mom * mom_score + final_w_rev * rev_score + final_w_str * str_score + final_w_brk * brk_score
+
+// Penalizar divergencia contraria
+tqs = (bearish_div and mom_dir == 1) ? tqs_raw * 0.7 : (bullish_div and mom_dir == -1) ? tqs_raw * 0.7 : tqs_raw
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DIRECCION CONSENSUS
+// ══════════════════════════════════════════════════════════════════════════════
+
+buy_score_total = (mom_dir == 1 ? mom_score : 0.0) + (rev_dir == 1 ? rev_score : 0.0) + (str_dir == 1 ? str_score : 0.0)
+sell_score_total = (mom_dir == -1 ? mom_score : 0.0) + (rev_dir == -1 ? rev_score : 0.0) + (str_dir == -1 ? str_score : 0.0)
+
+// 1 = BUY, -1 = SELL, 0 = NEUTRAL
+direccion = buy_score_total > sell_score_total and buy_score_total > 0.3 ? 1 : sell_score_total > buy_score_total and sell_score_total > 0.3 ? -1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UMBRAL Y FILTROS
+// ══════════════════════════════════════════════════════════════════════════════
+
+umbral_tqs = umbral_auto ? (tipo == "Forex" ? 0.65 : tipo == "Metal" ? 0.52 : tipo == "Crypto" ? 0.62 : 0.55) : umbral_manual
+
+// Filtros para no-FX
+adx_min = tipo == "Crypto" ? 25.0 : tipo == "Metal" ? 18.0 : tipo == "Forex" ? 0.0 : 22.0
+slope_min = tipo == "Metal" ? 0.002 : 0.005
+
+slope_ema_val = ema20[0] > 0 ? math.abs(ema20 - ema20[10]) / ema20 : 0.0
+
+nofx_ok = tipo == "Forex" ? true : (adx_val >= adx_min and slope_ema_val >= slope_min and not (direccion == 1 and close < ema50) and not (direccion == -1 and close > ema50))
+
+// Filtro de sesion
+hora_utc = hour(time, "UTC")
+en_sesion = not filtro_sesion or (hora_utc >= sesion_inicio and hora_utc < sesion_fin)
+
+// Señal final
+pasa_umbral = tqs >= umbral_tqs and direccion != 0 and nofx_ok and not regimen_choppy and en_sesion
+
+senal_buy = pasa_umbral and direccion == 1
+senal_sell = pasa_umbral and direccion == -1
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SL / TP
+// ══════════════════════════════════════════════════════════════════════════════
+
+sl_buy = close - atr14 * sl_atr_input
+tp_buy = close + atr14 * tp_atr_input
+sl_sell = close + atr14 * sl_atr_input
+tp_sell = close - atr14 * tp_atr_input
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VISUALIZACION OVERLAY
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Señales BUY/SELL
+plotshape(senal_buy, title="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.normal, text="BUY")
+plotshape(senal_sell, title="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.normal, text="SELL")
+
+// EMA
+plot(ema20, "EMA 20", color=color.new(color.blue, 50), linewidth=1)
+plot(ema50, "EMA 50", color=color.new(color.orange, 50), linewidth=1)
+
+// Bollinger Bands
+p_bb_upper = plot(bb_upper, "BB Upper", color=color.new(color.gray, 70))
+p_bb_lower = plot(bb_lower, "BB Lower", color=color.new(color.gray, 70))
+fill(p_bb_upper, p_bb_lower, color=squeeze ? color.new(color.red, 90) : color.new(color.blue, 95), title="BB Fill (rojo=squeeze)")
+
+// SL/TP lines en señales
+sl_val = senal_buy ? sl_buy : senal_sell ? sl_sell : na
+tp_val = senal_buy ? tp_buy : senal_sell ? tp_sell : na
+plot(show_sl_tp ? sl_val : na, "SL", color=color.red, style=plot.style_cross, linewidth=2)
+plot(show_sl_tp ? tp_val : na, "TP", color=color.green, style=plot.style_cross, linewidth=2)
+
+// Divergencias
+plotshape(show_divergence and bearish_div and not bearish_div[1], title="Div Bajista", style=shape.diamond, location=location.abovebar, color=color.new(color.purple, 20), size=size.tiny, text="DIV↓")
+plotshape(show_divergence and bullish_div and not bullish_div[1], title="Div Alcista", style=shape.diamond, location=location.belowbar, color=color.new(color.teal, 20), size=size.tiny, text="DIV↑")
+
+// Background: regimen
+bgcolor(show_regime and regimen_choppy ? color.new(color.red, 93) : show_regime and regimen_ranging ? color.new(color.yellow, 93) : show_regime and regimen_trending_volatile ? color.new(color.blue, 93) : na, title="Regimen BG")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PANEL INFERIOR (plots separados)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// TQS
+plot(show_tqs ? tqs * 100 : na, "TQS %", color=tqs >= umbral_tqs ? color.green : color.gray, linewidth=2, display=display.pane)
+hline_tqs = hline(show_tqs ? umbral_tqs * 100 : na, "Umbral TQS", color=color.new(color.red, 50), linestyle=hline.style_dashed, display=display.pane)
+
+// Motores individuales
+plot(show_engines ? mom_score * 100 : na, "Momentum", color=color.new(color.blue, 30), display=display.pane)
+plot(show_engines ? rev_score * 100 : na, "Reversion", color=color.new(color.orange, 30), display=display.pane)
+plot(show_engines ? brk_score * 100 : na, "Breakout", color=color.new(color.purple, 30), display=display.pane)
+plot(show_engines and tipo == "Forex" ? str_score * 100 : na, "Strength", color=color.new(color.teal, 30), display=display.pane)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTAS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(senal_buy, title="ParraCorp BUY", message="ParraCorp: BUY signal - TQS={{plot(\"TQS %\")}}")
+alertcondition(senal_sell, title="ParraCorp SELL", message="ParraCorp: SELL signal - TQS={{plot(\"TQS %\")}}")
+alertcondition(senal_buy or senal_sell, title="ParraCorp Signal", message="ParraCorp: Signal detected")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TABLA INFO
+// ══════════════════════════════════════════════════════════════════════════════
+
+var table info_table = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(info_table, 0, 0, "ParraCorp", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 0, "v3.1", text_color=color.gray, text_size=size.small)
+
+    table.cell(info_table, 0, 1, "Regimen", text_color=color.gray, text_size=size.tiny)
+    reg_color = regimen_choppy ? color.red : regimen_ranging ? color.yellow : regimen_trending_volatile ? color.blue : regimen_trending_calm ? color.green : color.white
+    table.cell(info_table, 1, 1, regimen_str, text_color=reg_color, text_size=size.tiny)
+
+    table.cell(info_table, 0, 2, "TQS", text_color=color.gray, text_size=size.tiny)
+    tqs_color = tqs >= umbral_tqs ? color.green : tqs >= umbral_tqs * 0.8 ? color.yellow : color.red
+    table.cell(info_table, 1, 2, str.tostring(math.round(tqs * 100, 1)) + "%", text_color=tqs_color, text_size=size.tiny)
+
+    table.cell(info_table, 0, 3, "Direccion", text_color=color.gray, text_size=size.tiny)
+    dir_str = direccion == 1 ? "BUY" : direccion == -1 ? "SELL" : "NEUTRAL"
+    dir_clr = direccion == 1 ? color.green : direccion == -1 ? color.red : color.gray
+    table.cell(info_table, 1, 3, dir_str, text_color=dir_clr, text_size=size.tiny)
+
+    table.cell(info_table, 0, 4, "ADX", text_color=color.gray, text_size=size.tiny)
+    table.cell(info_table, 1, 4, str.tostring(math.round(adx_val, 1)), text_color=adx_val > 25 ? color.green : color.white, text_size=size.tiny)
+
+    table.cell(info_table, 0, 5, "Vol Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(info_table, 1, 5, str.tostring(math.round(vol_ratio, 2)), text_color=vol_ratio > 1.3 ? color.orange : color.white, text_size=size.tiny)
+
+    table.cell(info_table, 0, 6, "Squeeze", text_color=color.gray, text_size=size.tiny)
+    table.cell(info_table, 1, 6, squeeze ? "SI" : "NO", text_color=squeeze ? color.red : color.green, text_size=size.tiny)
+
+    table.cell(info_table, 0, 7, "Umbral", text_color=color.gray, text_size=size.tiny)
+    table.cell(info_table, 1, 7, str.tostring(math.round(umbral_tqs * 100, 0)) + "%", text_color=color.white, text_size=size.tiny)

@@ -214,21 +214,20 @@ def _sl_tp_por_activo(symbol, vol_ratio=1.0):
 
     sym = symbol.upper().replace("/", "")
 
-    # Base optimizada por par (ajustado con datos reales abril 2026)
+    # Base optimizada por par (backtest abril 2026 — TP corto = WR alto)
     _OPTIMAL = {
-        # Metales — ATR alto, necesitan algo mas de espacio
-        "XAUUSD": (1.0, 1.8),   # SL ajustado, TP alcanzable en 1H
-        "XAGUSD": (1.0, 1.8),   # Similar a XAU en comportamiento
+        # Metales — TP 1.2 ATR sube WR de 38% a 45%
+        "XAUUSD": (0.8, 1.2),
+        "XAGUSD": (0.8, 1.2),
         # Crypto
-        "BTCUSD": (1.2, 2.0),
-        "SOLUSD": (1.0, 1.8),
-        "ETHUSD": (1.0, 1.8),
-        # Forex — menor ATR, movimientos mas predecibles
-        "GBPJPY": (0.8, 1.5),   # Par mas rentable, TP cercano funciona bien
-        "NZDJPY": (0.8, 1.5),   # Similar a GBPJPY
-        "EURUSD": (0.8, 1.3),
-        "GBPUSD": (0.8, 1.5),
-        "USDJPY": (0.8, 1.5),
+        "BTCUSD": (1.0, 1.5),
+        "SOLUSD": (0.8, 1.2),
+        "ETHUSD": (0.8, 1.2),
+        # Forex — EURUSD es el mejor par (57% WR, PF 1.91)
+        "EURUSD": (0.7, 1.0),
+        "GBPJPY": (0.8, 1.2),
+        "GBPUSD": (0.8, 1.2),
+        "USDJPY": (0.8, 1.2),
     }
 
     if sym in _OPTIMAL:
@@ -236,15 +235,15 @@ def _sl_tp_por_activo(symbol, vol_ratio=1.0):
     else:
         t = tipo_activo(symbol)
         if t == "forex":
-            sl_base, tp_base = 0.8, 1.5
+            sl_base, tp_base = 0.8, 1.2
         elif t == "metal":
-            sl_base, tp_base = 1.0, 1.8
+            sl_base, tp_base = 0.8, 1.2
         elif t == "crypto":
-            sl_base, tp_base = 1.0, 1.8
+            sl_base, tp_base = 1.0, 1.5
         elif t in ("indice", "commodity"):
-            sl_base, tp_base = 1.0, 1.8
+            sl_base, tp_base = 0.8, 1.2
         else:
-            sl_base, tp_base = 0.8, 1.5
+            sl_base, tp_base = 0.8, 1.2
 
     # Adaptacion por volatilidad actual
     if vol_ratio > 1.3:

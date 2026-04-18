@@ -439,12 +439,31 @@ def call_brain_ia(symbol, snapshot, engines_result, regimen, use_ia=True):
     brain._last_call_ts = 0
 
     if not use_ia:
-        # Forzar solo estadistico (sin gastar tokens)
-        import config as cfg
-        old_modo = cfg.state.get("ia_modo", "autonomo")
-        cfg.state["ia_modo"] = "off"
-        result = analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
-        cfg.state["ia_modo"] = old_modo
+        # Modo estadistico puro: usar directamente la senal de los motores
+        from brain import _sl_tp_por_activo
+        tqs = engines_result.get("trade_quality_score", 0)
+        if tqs < 0.65:
+            return {"action": "WAIT", "confidence": int(tqs * 100)}
+        precio = snapshot.get("precio", 0)
+        atr = snapshot.get("atr", 0)
+        if precio == 0 or atr == 0:
+            return {"action": "WAIT", "confidence": 0}
+        vol_ratio = snapshot.get("vol_ratio", 1.0)
+        sl_atr, tp_atr = _sl_tp_por_activo(symbol, vol_ratio)
+        if direction == "BUY":
+            sl = precio - atr * sl_atr
+            tp = precio + atr * tp_atr
+        else:
+            sl = precio + atr * sl_atr
+            tp = precio - atr * tp_atr
+        return {
+            "action": direction,
+            "confidence": int(tqs * 100),
+            "sl": sl, "tp": tp,
+            "risk_pct": 1.0,
+            "trailing_stop": "atr" if tp_atr >= 2.0 else "none",
+            "votos": {"stats": direction},
+        }
     else:
         result = analyze(symbol, snapshot, engines_result, context, regimen_info, mtf_info, of_info, sr_info)
 

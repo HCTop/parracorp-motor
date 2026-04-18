@@ -205,7 +205,7 @@ state = {
     "capital": 10000.0,
     "riesgo_pct": 1.0,
     "max_ops": 3,
-    "rr_minimo": 1.5,
+    "rr_minimo": 1.3,
     # Watchlist
     "watchlist": list(WL_RECOMENDADA),
     "watchlist_opcional": [],  # Pares opcionales activados por el usuario
