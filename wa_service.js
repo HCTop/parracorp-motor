@@ -60,10 +60,16 @@ console.log('[WA] Iniciando whatsapp-web.js...');
 console.log('[WA] Sesion en:', SESSION_DIR);
 
 // Create WhatsApp client
+// webVersionCache pinea una version de WhatsApp Web que funciona con la lib,
+// evitando el error 'Execution context was destroyed' cuando WA actualiza su frontend.
 const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: SESSION_DIR,
     }),
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1037994907-alpha.html',
+    },
     puppeteer: {
         headless: true,
         args: [
