@@ -2088,6 +2088,32 @@ def wa_status():
         return jsonify({"connected": False})
 
 
+@app.route("/wa/qr")
+def wa_qr():
+    """Proxy del QR HTML de wa_service.js para re-vincular WhatsApp desde el navegador."""
+    import requests
+    from flask import Response
+    try:
+        r = requests.get("http://127.0.0.1:3001/wa/qr", timeout=5)
+        return Response(r.content, status=r.status_code,
+                        content_type=r.headers.get("Content-Type", "text/html"))
+    except Exception as e:
+        return Response(f"<h2>wa_service no responde: {e}</h2>", status=502,
+                        content_type="text/html")
+
+
+@app.route("/wa/qr/text")
+def wa_qr_text():
+    """Proxy del QR como JSON (para debug / clientes sin navegador)."""
+    import requests
+    try:
+        r = requests.get("http://127.0.0.1:3001/wa/qr/text", timeout=5)
+        return Response(r.content, status=r.status_code,
+                        content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        return jsonify({"error": str(e), "qr": None, "connected": False}), 502
+
+
 @app.route("/test/alert", methods=["POST"])
 def test_alert():
     """Envia alerta de prueba 50%/70% TP a push, Telegram y WhatsApp."""
