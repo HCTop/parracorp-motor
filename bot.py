@@ -55,6 +55,7 @@ import whatsapp_bot as wa
 import alerts as price_alerts
 from push import send_alert as push_alert
 from chart_gen import generate_signal_chart, cleanup_old_charts
+from confluence import ConfluenceEngine, ConfluenceParams, DEFAULT_PARAMS as CONF_DEFAULTS
 
 app = Flask(__name__)
 
@@ -90,6 +91,19 @@ _regime_cache = {}
 _brain_cache = {}   # {(symbol, tf): {"votos": {...}, "consensus": str, "ts": int}}
 _cache_lock = threading.Lock()
 _features_history = {}  # {symbol: [last N features]}
+
+# === CONFLUENCE ENGINE (XAUUSD) ===============================================
+_confluence_engine = ConfluenceEngine(CONF_DEFAULTS)
+_confluence_state = {
+    "activo": True,
+    "direction": "Auto",       # Auto, SoloBuy, SoloSell, Pausado
+    "last_signal": None,       # Ultimo resultado
+    "last_ts": 0,
+    "bar_index": 0,
+    "day_key": 0,
+    "details": {},
+}
+_CONFLUENCE_SYMBOLS = {"XAUUSD"}  # Pares que usan Confluence en vez de brain IA
 
 @app.after_request
 def _cors(response):
@@ -304,12 +318,16 @@ def _on_new_bar(symbol, tf):
             _log_cycle(symbol, tf, snapshot, htf, tqs, regimen, engines_result, skip_reason)
             return
 
-        # Brain v4: IA decide (Modelo B en TF 1H, Stats fallback en otros TFs)
-        result = brain_analyze(
-            symbol, snapshot, engines_result, context,
-            reg_info, mtf_info, of_info, sr_info,
-            htf_trend=htf,
-        )
+        # === CONFLUENCE OVERRIDE para XAUUSD ===
+        if symbol in _CONFLUENCE_SYMBOLS and _confluence_state["activo"]:
+            result = _run_confluence(symbol, tf, snapshot, reg_info)
+        else:
+            # Brain v4: IA decide (Modelo B en TF 1H, Stats fallback en otros TFs)
+            result = brain_analyze(
+                symbol, snapshot, engines_result, context,
+                reg_info, mtf_info, of_info, sr_info,
+                htf_trend=htf,
+            )
 
         # Cache brain result (votos)
         with _cache_lock:
@@ -743,10 +761,13 @@ def motor_principal():
             except Exception:
                 pass
 
+            # Confluence symbols: ensure M15 + H1 subscriptions
+            for csym in _CONFLUENCE_SYMBOLS:
+                if any(p[0] == csym for p in pairs):
+                    pairs.add((csym, "15"))
+                    pairs.add((csym, "60"))
+
             # TFs de display: solo añadir los que faltan y son ligeros
-            # 1m y 5m no se suscriben (demasiado ruido, coste alto)
-            # 30m, 1D, 1M se calculan desde barras existentes en _tech_mtf
-            # Solo suscribimos los que no tenemos: 30, 1D
             _EXTRA_DISPLAY_TFS = ["30", "1D"]
             syms_in_pairs = set(p[0] for p in pairs)
             for sym_d in syms_in_pairs:
@@ -775,6 +796,127 @@ def motor_principal():
             cfg.state["motor_ok"] = False
             mlog("ERROR", f"Motor error: {e}")
             time.sleep(10)
+
+
+# === CONFLUENCE ENGINE ========================================================
+
+def _run_confluence(symbol, tf, snapshot, reg_info):
+    """Ejecuta Confluence para XAUUSD en lugar de brain IA."""
+    from data_feed import _stream
+    from risk_engine import ajustar_riesgo_por_regimen
+
+    if not _stream:
+        return {"action": "WAIT", "confidence": 0, "reason": "Sin datos streaming"}
+
+    # Obtener barras M15 y H1
+    m15_bars = _stream.get_bars(symbol, "15")
+    h1_bars = _stream.get_bars(symbol, "60")
+
+    if not m15_bars or len(m15_bars) < 60:
+        return {"action": "WAIT", "confidence": 0, "reason": "M15 insuficientes"}
+    if not h1_bars or len(h1_bars) < 30:
+        return {"action": "WAIT", "confidence": 0, "reason": "H1 insuficientes"}
+
+    # Extraer OHLC
+    m15_highs = [b[2] for b in m15_bars]
+    m15_lows = [b[3] for b in m15_bars]
+    m15_closes = [b[4] for b in m15_bars]
+
+    h1_highs = [b[2] for b in h1_bars]
+    h1_lows = [b[3] for b in h1_bars]
+    h1_closes = [b[4] for b in h1_bars]
+
+    # Warmup si es la primera vez
+    if not _confluence_engine._warmed_up:
+        _confluence_engine.warmup(m15_highs, m15_lows, m15_closes,
+                                  h1_highs, h1_lows, h1_closes)
+        mlog("CONFL", f"{symbol} Confluence engine warmed up (M15={len(m15_bars)} H1={len(h1_bars)} bars)")
+
+    atr = snapshot.get("atr", 0)
+    hora_utc = datetime.utcnow().hour
+
+    # Day key para control de trades/dia
+    now = datetime.utcnow()
+    day_key = now.year * 1000 + now.timetuple().tm_yday
+
+    _confluence_state["bar_index"] += 1
+
+    # Evaluar confluence
+    conf_result = _confluence_engine.evaluate(
+        m15_highs, m15_lows, m15_closes, len(m15_closes) - 1,
+        h1_highs, h1_lows, h1_closes, len(h1_closes) - 1,
+        hora_utc, atr,
+        bar_index=_confluence_state["bar_index"],
+        day_key=day_key,
+        direction_override=_confluence_state["direction"],
+    )
+
+    # Guardar estado para la app
+    _confluence_state["last_ts"] = int(time.time())
+    _confluence_state["day_key"] = day_key
+    _confluence_state["details"] = conf_result.details
+    _confluence_state["last_signal"] = {
+        "action": conf_result.action,
+        "confidence": conf_result.confidence,
+        "bull_conf": conf_result.bull_conf,
+        "bear_conf": conf_result.bear_conf,
+        "entry": conf_result.entry,
+        "atr": round(atr, 2),
+    }
+
+    # Convertir a formato brain result (compatible con el pipeline de emision)
+    riesgo_base = CONF_DEFAULTS.risk_pct
+    riesgo_ajustado = ajustar_riesgo_por_regimen(riesgo_base, reg_info)
+
+    result = {
+        "action": conf_result.action,
+        "confidence": conf_result.confidence,
+        "entry": conf_result.entry,
+        "sl": round(conf_result.sl, 2) if conf_result.sl else 0,
+        "tp": round(conf_result.tp, 2) if conf_result.tp else 0,
+        "sl_atr_mult": CONF_DEFAULTS.sl_atr_mult,
+        "tp_atr_mult": CONF_DEFAULTS.sl_atr_mult * CONF_DEFAULTS.tp_rr,
+        "risk_pct": riesgo_ajustado,
+        "reason": _build_confluence_reason(conf_result),
+        "groq_analysis": "",
+        "blocked": False,
+        "trailing_stop": "atr" if CONF_DEFAULTS.use_trailing else "none",
+        "votos": {
+            "confluence": {"action": conf_result.action, "confidence": conf_result.confidence},
+        },
+        "consensus": f"CONFLUENCE {conf_result.bull_conf if conf_result.action == 'BUY' else conf_result.bear_conf}/4",
+        "tqs": conf_result.confidence / 100.0,
+        "regimen": reg_info.get("regimen", "NORMAL"),
+    }
+
+    if conf_result.action in ("BUY", "SELL"):
+        mlog("CONFL", f"{symbol} {conf_result.action} {conf_result.confidence}% | "
+             f"Bull={conf_result.bull_conf} Bear={conf_result.bear_conf} | "
+             f"Entry={conf_result.entry:.2f} SL={conf_result.sl:.2f} TP={conf_result.tp:.2f}")
+    else:
+        mlog("CONFL", f"{symbol} WAIT | Bull={conf_result.bull_conf}/4 Bear={conf_result.bear_conf}/4 | "
+             f"{conf_result.details.get('blocked', '')}")
+
+    return result
+
+
+def _build_confluence_reason(r):
+    """Construye texto para la senal de Confluence."""
+    if r.action == "WAIT":
+        blocked = r.details.get("blocked", "")
+        if blocked:
+            return f"[CONFLUENCE] Bloqueado: {blocked}"
+        return f"[CONFLUENCE] Bull={r.bull_conf}/4 Bear={r.bear_conf}/4 - Esperando"
+
+    d = r.details
+    parts = []
+    is_buy = r.action == "BUY"
+    parts.append(f"Struct={'✓' if d.get('structure_bull' if is_buy else 'structure_bear', 0) >= 1 else '✗'}")
+    parts.append(f"Mom={'✓' if d.get('mom_bull' if is_buy else 'mom_bear') else '✗'}")
+    parts.append(f"ST={'✓' if d.get('st_aligned_bull' if is_buy else 'st_aligned_bear') else '✗'}")
+    parts.append(f"Sess={'✓' if d.get('in_session') else '✗'}")
+    conf = r.bull_conf if is_buy else r.bear_conf
+    return f"[CONFLUENCE {conf}/4] " + " | ".join(parts)
 
 
 # === API REST ENDPOINTS ======================================================
@@ -1278,6 +1420,19 @@ def _build_estado(sym, tf):
             "reason": brain.get("reason", ""),
             "ts": brain.get("ts", 0),
         },
+        # Confluence (XAUUSD)
+        "confluence": {
+            "activo": _confluence_state["activo"],
+            "direction": _confluence_state["direction"],
+            "last_signal": _confluence_state.get("last_signal"),
+            "last_ts": _confluence_state.get("last_ts", 0),
+            "details": _confluence_state.get("details", {}),
+            "supertrend": {
+                "m15_bull": _confluence_engine.m15_st.bull,
+                "h1_bull": _confluence_engine.h1_st.bull,
+            },
+            "is_confluence_symbol": sym in _CONFLUENCE_SYMBOLS,
+        },
         # Watchlist
         "watchlist": cfg.state.get("watchlist", []),
         "watchlist_opcional": cfg.state.get("watchlist_opcional", []),
@@ -1453,6 +1608,81 @@ def ia_toggle():
     cfg.guardar()
     mlog("IA", f"IA modo: {cfg.state['ia_modo']}")
     return jsonify({"ia_modo": cfg.state["ia_modo"]})
+
+
+# === CONFLUENCE CONTROL ENDPOINTS =============================================
+
+@app.route("/confluence/status", methods=["GET"])
+def confluence_status():
+    """Estado completo del motor Confluence."""
+    return jsonify({
+        "activo": _confluence_state["activo"],
+        "direction": _confluence_state["direction"],
+        "last_signal": _confluence_state.get("last_signal"),
+        "last_ts": _confluence_state.get("last_ts", 0),
+        "details": _confluence_state.get("details", {}),
+        "params": {
+            "swing_lookback": CONF_DEFAULTS.swing_lookback,
+            "stoch_rsi_period": CONF_DEFAULTS.stoch_rsi_period,
+            "stoch_ob": CONF_DEFAULTS.stoch_ob,
+            "stoch_os": CONF_DEFAULTS.stoch_os,
+            "macd_fast": CONF_DEFAULTS.macd_fast,
+            "macd_slow": CONF_DEFAULTS.macd_slow,
+            "macd_signal": CONF_DEFAULTS.macd_signal,
+            "h1_st_period": CONF_DEFAULTS.h1_st_period,
+            "h1_st_mult": CONF_DEFAULTS.h1_st_mult,
+            "m15_st_period": CONF_DEFAULTS.m15_st_period,
+            "m15_st_mult": CONF_DEFAULTS.m15_st_mult,
+            "sess_start": CONF_DEFAULTS.sess_start,
+            "sess_end": CONF_DEFAULTS.sess_end,
+            "min_confirmations": CONF_DEFAULTS.min_confirmations,
+            "sl_atr_mult": CONF_DEFAULTS.sl_atr_mult,
+            "tp_rr": CONF_DEFAULTS.tp_rr,
+        },
+        "symbols": list(_CONFLUENCE_SYMBOLS),
+        "supertrend": {
+            "m15_bull": _confluence_engine.m15_st.bull,
+            "h1_bull": _confluence_engine.h1_st.bull,
+            "m15_value": round(_confluence_engine.m15_st.st_dn if _confluence_engine.m15_st.bull else _confluence_engine.m15_st.st_up, 2),
+            "h1_value": round(_confluence_engine.h1_st.st_dn if _confluence_engine.h1_st.bull else _confluence_engine.h1_st.st_up, 2),
+        },
+    })
+
+
+@app.route("/confluence/toggle", methods=["POST"])
+def confluence_toggle():
+    """Activa/desactiva Confluence para XAUUSD."""
+    _confluence_state["activo"] = not _confluence_state["activo"]
+    status = "ON" if _confluence_state["activo"] else "OFF"
+    mlog("CONFL", f"Confluence {'activado' if _confluence_state['activo'] else 'DESACTIVADO'}")
+    return jsonify({"activo": _confluence_state["activo"], "status": status})
+
+
+@app.route("/confluence/direction", methods=["POST"])
+def confluence_direction():
+    """Cambia la direccion manual de Confluence.
+    Body: {"direction": "Auto|SoloBuy|SoloSell|Pausado"}
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    new_dir = data.get("direction", "Auto")
+    valid = ("Auto", "SoloBuy", "SoloSell", "Pausado")
+    if new_dir not in valid:
+        return jsonify({"error": f"Direccion invalida. Validas: {valid}"}), 400
+    _confluence_state["direction"] = new_dir
+    mlog("CONFL", f"Confluence direction: {new_dir}")
+    return jsonify({"direction": new_dir})
+
+
+@app.route("/confluence/reset", methods=["POST"])
+def confluence_reset():
+    """Resetea el motor Confluence (supertrend, contadores)."""
+    global _confluence_engine
+    _confluence_engine = ConfluenceEngine(CONF_DEFAULTS)
+    _confluence_state["bar_index"] = 0
+    _confluence_state["last_signal"] = None
+    _confluence_state["details"] = {}
+    mlog("CONFL", "Confluence engine RESETEADO")
+    return jsonify({"ok": True, "message": "Confluence reseteado"})
 
 
 @app.route("/ia/log", methods=["GET"])
