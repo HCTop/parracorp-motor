@@ -1,19 +1,26 @@
 /**
- * wa_service.js - Servicio WhatsApp Web local
+ * wa_service.js - Servicio WhatsApp via Baileys (WebSocket directo)
  *
- * Usa whatsapp-web.js con Chromium headless.
- * Expone API HTTP interna (solo localhost) para que Python envie mensajes.
- * Sesion persistente en /data/wa_session (Railway Volume).
+ * Reemplazo de whatsapp-web.js (Chromium + scraping) por
+ * @whiskeysockets/baileys (WebSocket a WhatsApp). Mas estable,
+ * mas ligero (no usa Chromium) y mas resistente a cambios del
+ * frontend de WhatsApp Web.
  *
- * Endpoints:
- *   GET  /wa/status  - Estado de conexion
- *   GET  /wa/qr      - QR code como imagen (para escanear desde navegador)
- *   GET  /wa/qr/text - QR code como texto (para logs)
- *   POST /wa/send    - Enviar mensaje { group_name, message }
- *   GET  /wa/groups  - Lista de grupos disponibles
+ * API HTTP identica a la version anterior para no tocar Python:
+ *   GET  /wa/status       - Estado
+ *   GET  /wa/qr           - QR como pagina HTML
+ *   GET  /wa/qr/text      - QR como JSON
+ *   GET  /wa/groups       - Lista de grupos
+ *   POST /wa/send         - { group_name | chat_id, message }
+ *   POST /wa/send-image   - { group_name | chat_id, image_path, caption }
  */
-
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    Browsers,
+} = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
 const express = require('express');
 const QRCode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -23,125 +30,128 @@ const fs = require('fs');
 const app = express();
 app.use(express.json());
 
-const PORT = 3001;  // Internal only, not exposed
+const PORT = 3001;
 const DATA_DIR = fs.existsSync('/data') ? '/data' : __dirname;
 const SESSION_DIR = path.join(DATA_DIR, 'wa_session');
 
-// State
-let currentQR = null;
-let isReady = false;
-let clientInfo = null;
-let groupCache = {};  // name -> chatId
-let lastError = null;
-
-// Ensure session dir exists + clean stale locks
 if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
-// Remove Chromium lock files from previous crashed sessions
-const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-function cleanLocks(dir) {
-    try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const e of entries) {
-            const full = path.join(dir, e.name);
-            if (lockFiles.includes(e.name)) {
-                fs.unlinkSync(full);
-                console.log(`[WA] Removed stale lock: ${full}`);
-            } else if (e.isDirectory()) {
-                cleanLocks(full);
-            }
-        }
-    } catch (_) {}
-}
-cleanLocks(SESSION_DIR);
 
-console.log('[WA] Iniciando whatsapp-web.js...');
+// Logger silencioso compatible con baileys (evita dep de pino)
+const logger = {
+    level: 'silent',
+    trace: () => {},
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    fatal: () => {},
+    child() { return logger; },
+};
+
+// State
+let sock = null;
+let currentQR = null;
+let isReady = false;
+let me = null;
+let groupCache = {};  // name -> jid
+let lastError = null;
+
+console.log('[WA] Iniciando Baileys...');
 console.log('[WA] Sesion en:', SESSION_DIR);
 
-// Create WhatsApp client
-// webVersionCache pinea una version de WhatsApp Web que funciona con la lib,
-// evitando el error 'Execution context was destroyed' cuando WA actualiza su frontend.
-const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: SESSION_DIR,
-    }),
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1037994907-alpha.html',
-    },
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--disable-gpu',
-        ],
-        executablePath: process.env.CHROMIUM_PATH || undefined,
-    },
-});
-
-// Events
-client.on('qr', (qr) => {
-    currentQR = qr;
-    console.log('[WA] QR recibido - escanea con tu telefono:');
-    qrcodeTerminal.generate(qr, { small: true });
-    console.log('[WA] O abre: /wa/qr en el navegador');
-});
-
-client.on('ready', async () => {
-    isReady = true;
-    currentQR = null;
-    clientInfo = client.info;
-    console.log(`[WA] Conectado como: ${clientInfo.pushname} (${clientInfo.wid.user})`);
-
-    // Cache groups
+async function refreshGroups() {
+    if (!sock) return;
     try {
-        const chats = await client.getChats();
-        const groups = chats.filter(c => c.isGroup);
-        groups.forEach(g => {
-            groupCache[g.name] = g.id._serialized;
-        });
-        console.log(`[WA] ${groups.length} grupos encontrados`);
-        groups.forEach(g => console.log(`  - ${g.name}`));
+        const groups = await sock.groupFetchAllParticipating();
+        groupCache = {};
+        for (const jid of Object.keys(groups)) {
+            const info = groups[jid];
+            if (info && info.subject) {
+                groupCache[info.subject] = jid;
+            }
+        }
+        console.log(`[WA] ${Object.keys(groupCache).length} grupos encontrados`);
+        Object.keys(groupCache).forEach(n => console.log(`  - ${n}`));
     } catch (e) {
         console.log('[WA] Error cargando grupos:', e.message);
     }
-});
+}
 
-client.on('authenticated', () => {
-    console.log('[WA] Sesion autenticada (guardada para proximas veces)');
-});
+async function startBaileys() {
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
-client.on('auth_failure', (msg) => {
-    lastError = `Auth failed: ${msg}`;
-    console.log('[WA] Error de autenticacion:', msg);
-});
+        sock = makeWASocket({
+            auth: state,
+            logger: logger,
+            printQRInTerminal: false,
+            browser: Browsers.ubuntu('ParraCorp'),
+            markOnlineOnConnect: false,
+            syncFullHistory: false,
+        });
 
-client.on('disconnected', (reason) => {
-    isReady = false;
-    lastError = `Disconnected: ${reason}`;
-    console.log('[WA] Desconectado:', reason);
-    // Reconnect
-    setTimeout(() => {
-        console.log('[WA] Reconectando...');
-        client.initialize();
-    }, 5000);
-});
+        sock.ev.on('creds.update', saveCreds);
 
-// Initialize
-client.initialize();
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                currentQR = qr;
+                console.log('[WA] QR recibido - escanea con tu telefono:');
+                qrcodeTerminal.generate(qr, { small: true });
+                console.log('[WA] O abre /wa/qr en el navegador');
+            }
+
+            if (connection === 'open') {
+                isReady = true;
+                currentQR = null;
+                lastError = null;
+                me = sock.user;
+                console.log(`[WA] Conectado como: ${me?.name || me?.id}`);
+                // Pequena espera para que el store se estabilice
+                setTimeout(() => refreshGroups(), 2000);
+            }
+
+            if (connection === 'close') {
+                isReady = false;
+                const statusCode = (lastDisconnect?.error instanceof Boom)
+                    ? lastDisconnect.error.output.statusCode
+                    : (lastDisconnect?.error?.output?.statusCode || 0);
+                const loggedOut = statusCode === DisconnectReason.loggedOut;
+
+                console.log(`[WA] Desconectado (code=${statusCode}, loggedOut=${loggedOut})`);
+
+                if (loggedOut) {
+                    lastError = 'Sesion cerrada - hace falta nuevo QR';
+                    // Limpiar credenciales para forzar nuevo QR
+                    try {
+                        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+                        fs.mkdirSync(SESSION_DIR, { recursive: true });
+                    } catch (_) {}
+                    setTimeout(() => startBaileys(), 3000);
+                } else {
+                    lastError = `Disconnected (${statusCode})`;
+                    setTimeout(() => startBaileys(), 5000);
+                }
+            }
+        });
+
+    } catch (e) {
+        console.log('[WA] Error iniciando Baileys:', e.message);
+        lastError = e.message;
+        setTimeout(() => startBaileys(), 10000);
+    }
+}
 
 // === HTTP API ===
 
 app.get('/wa/status', (req, res) => {
     res.json({
         connected: isReady,
-        user: clientInfo ? clientInfo.pushname : null,
-        phone: clientInfo ? clientInfo.wid.user : null,
+        user: me?.name || null,
+        phone: me?.id ? String(me.id).split(':')[0].split('@')[0] : null,
         groups: Object.keys(groupCache).length,
         qr_pending: currentQR !== null,
         error: lastError,
@@ -184,111 +194,75 @@ app.get('/wa/groups', async (req, res) => {
     if (!isReady) {
         return res.json({ connected: false, groups: [] });
     }
-    try {
-        const chats = await client.getChats();
-        const groups = chats.filter(c => c.isGroup);
-        groupCache = {};
-        groups.forEach(g => {
-            groupCache[g.name] = g.id._serialized;
-        });
-        console.log(`[WA] ${groups.length} grupos encontrados`);
-        res.json({
-            connected: true,
-            groups: groups.map(g => g.name),
-        });
-    } catch (e) {
-        res.json({ connected: isReady, groups: Object.keys(groupCache), error: e.message });
-    }
+    await refreshGroups();
+    res.json({
+        connected: true,
+        groups: Object.keys(groupCache),
+    });
 });
+
+async function resolveJid(group_name, chat_id) {
+    if (chat_id) return chat_id;
+    if (!group_name) return null;
+    let jid = groupCache[group_name];
+    if (!jid) {
+        await refreshGroups();
+        jid = groupCache[group_name];
+    }
+    return jid;
+}
 
 app.post('/wa/send', async (req, res) => {
     if (!isReady) {
         return res.status(503).json({ ok: false, error: 'WhatsApp no conectado' });
     }
-
     const { group_name, message, chat_id } = req.body;
     if (!message) {
         return res.status(400).json({ ok: false, error: 'message requerido' });
     }
-
     try {
-        let targetId = chat_id;
-
-        // Find group by name if no chat_id
-        if (!targetId && group_name) {
-            targetId = groupCache[group_name];
-
-            // If not cached, search again
-            if (!targetId) {
-                const chats = await client.getChats();
-                const group = chats.find(c => c.isGroup && c.name === group_name);
-                if (group) {
-                    targetId = group.id._serialized;
-                    groupCache[group_name] = targetId;
-                }
-            }
-        }
-
-        if (!targetId) {
+        const jid = await resolveJid(group_name, chat_id);
+        if (!jid) {
             return res.status(404).json({
                 ok: false,
                 error: `Grupo "${group_name}" no encontrado`,
                 available: Object.keys(groupCache),
             });
         }
-
-        await client.sendMessage(targetId, message);
-        console.log(`[WA] Mensaje enviado a "${group_name || targetId}"`);
+        await sock.sendMessage(jid, { text: message });
+        console.log(`[WA] Mensaje enviado a "${group_name || jid}"`);
         res.json({ ok: true });
-
     } catch (e) {
         console.log('[WA] Error enviando:', e.message);
         res.status(500).json({ ok: false, error: e.message });
     }
 });
 
-// Send image with caption
 app.post('/wa/send-image', async (req, res) => {
     if (!isReady) {
         return res.status(503).json({ ok: false, error: 'WhatsApp no conectado' });
     }
-
     const { group_name, image_path, caption, chat_id } = req.body;
     if (!image_path) {
         return res.status(400).json({ ok: false, error: 'image_path requerido' });
     }
-
     try {
-        let targetId = chat_id;
-        if (!targetId && group_name) {
-            targetId = groupCache[group_name];
-            if (!targetId) {
-                const chats = await client.getChats();
-                const group = chats.find(c => c.isGroup && c.name === group_name);
-                if (group) {
-                    targetId = group.id._serialized;
-                    groupCache[group_name] = targetId;
-                }
-            }
-        }
-
-        if (!targetId) {
+        const jid = await resolveJid(group_name, chat_id);
+        if (!jid) {
             return res.status(404).json({ ok: false, error: `Grupo "${group_name}" no encontrado` });
         }
-
-        const { MessageMedia } = require('whatsapp-web.js');
-        const media = MessageMedia.fromFilePath(image_path);
-        await client.sendMessage(targetId, media, { caption: caption || '' });
-        console.log(`[WA] Imagen enviada a "${group_name || targetId}"`);
+        const buffer = fs.readFileSync(image_path);
+        await sock.sendMessage(jid, { image: buffer, caption: caption || '' });
+        console.log(`[WA] Imagen enviada a "${group_name || jid}"`);
         res.json({ ok: true });
-
     } catch (e) {
         console.log('[WA] Error enviando imagen:', e.message);
         res.status(500).json({ ok: false, error: e.message });
     }
 });
 
-// Start server
 app.listen(PORT, '127.0.0.1', () => {
     console.log(`[WA] API HTTP en http://127.0.0.1:${PORT}`);
 });
+
+startBaileys();

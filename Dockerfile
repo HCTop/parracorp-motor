@@ -1,19 +1,12 @@
 FROM python:3.12-slim
 
-# Install Node.js 20 + Chromium
+# Install Node.js 20 (sin Chromium: Baileys usa WebSocket directo)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
-    chromium \
-    chromium-driver \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Set Chromium path for whatsapp-web.js
-ENV CHROMIUM_PATH=/usr/bin/chromium
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 WORKDIR /app
 
