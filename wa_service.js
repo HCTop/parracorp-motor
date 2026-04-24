@@ -38,17 +38,22 @@ if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
 
-// Logger silencioso compatible con baileys (evita dep de pino)
-const logger = {
-    level: 'silent',
-    trace: () => {},
-    debug: () => {},
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    fatal: () => {},
-    child() { return logger; },
-};
+// Logger compatible con baileys (evita dep de pino).
+// Nivel 'warn' para no spamear pero ver problemas reales.
+function makeLogger(level) {
+    const logger = {
+        level: level,
+        trace: () => {},
+        debug: () => {},
+        info: (...args) => console.log('[WA-baileys]', ...args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 300) : a)),
+        warn: (...args) => console.log('[WA-baileys-warn]', ...args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 300) : a)),
+        error: (...args) => console.error('[WA-baileys-error]', ...args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 500) : a)),
+        fatal: (...args) => console.error('[WA-baileys-fatal]', ...args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 500) : a)),
+        child() { return logger; },
+    };
+    return logger;
+}
+const logger = makeLogger('warn');
 
 // State
 let sock = null;
