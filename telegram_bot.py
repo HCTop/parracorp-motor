@@ -161,7 +161,7 @@ def send_signal_open(signal, chart_path=None):
         }
         ts_label = ts_map.get(trailing, trailing)
         text += f"\u2022 Trailing: <b>{ts_label}</b>\n"
-    text += f"\n\U0001F916 ParraCorp | {sig_id}"
+    text += f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
 
     # Enviar con grafico si disponible
     if chart_path and os.path.exists(chart_path):
@@ -215,7 +215,7 @@ def send_signal_close(signal):
         f"\u2022 Salida: <code>{_fmt_price(exit_price, sym)}</code>\n"
         f"{pnl_emoji} PnL: <b>{sign}{pnl_pct:.2f}%</b> ({sign}{pnl_usd:.2f}\u20ac)\n"
         f"\n"
-        f"\U0001F916 ParraCorp | {sig_id}"
+        f"\U0001F916 By ParraCorp-V2 | {sig_id}"
     )
 
     _send_async(text)
@@ -249,7 +249,7 @@ def send_daily_summary(stats):
         f"\n"
         f"{pnl_emoji} PnL Total: <b>{'+' if pnl >= 0 else ''}{pnl:.2f}\u20ac</b>\n"
         f"\n"
-        f"\U0001F916 ParraCorp Motor"
+        f"\U0001F916 By ParraCorp-V2 Motor"
     )
 
     _send_async(text)
@@ -296,7 +296,7 @@ def send_history_summary(trades, period_label=""):
         f"",
         f"{pnl_emoji} PnL Total: <b>{sign}{total_pnl:.2f}\u20ac</b>",
         f"",
-        f"\U0001F916 ParraCorp Motor",
+        f"\U0001F916 By ParraCorp-V2 Motor",
     ]
 
     # Split into chunks to stay under Telegram 4096 char limit

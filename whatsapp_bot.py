@@ -152,7 +152,7 @@ def send_signal_open(signal, chart_path=None):
         }
         ts_label = ts_map.get(trailing, trailing)
         text += f"Trailing: *{ts_label}*\n"
-    text += f"\nParraCorp | {sig_id}"
+    text += f"\nBy ParraCorp-V2 | {sig_id}"
 
     # Enviar con grafico si disponible
     import os
@@ -202,7 +202,7 @@ def send_signal_close(signal):
         f"Entrada: {_fmt_price(entry)}\n"
         f"Salida: {_fmt_price(exit_price)}\n"
         f"PnL: *{sign}{pnl_pct:.2f}%* ({sign}{pnl_usd:.2f}\u20ac)\n"
-        f"\nParraCorp | {sig_id}"
+        f"\nBy ParraCorp-V2 | {sig_id}"
     )
 
     _send_async(text)
@@ -230,7 +230,7 @@ def send_daily_summary(stats):
         f"Profit Factor: {pf:.2f}\n"
         f"\n"
         f"PnL Total: *{sign}{pnl:.2f}\u20ac*\n"
-        f"\nParraCorp Motor"
+        f"\nBy ParraCorp-V2 Motor"
     )
 
     _send_async(text)
@@ -261,7 +261,7 @@ def send_history_summary(trades, period_label=""):
         emoji = "✅" if t.get("pnl_usd", 0) > 0 else "❌"
         trade_lines.append(f"{emoji} {t.get('id','')} {t.get('action','')} {t.get('symbol','')} {t.get('pnl_usd',0):+.2f}\u20ac")
 
-    footer = f"\n💰 PnL Total: *{sign}{total_pnl:.2f}\u20ac*\n\n🤖 ParraCorp Motor"
+    footer = f"\n💰 PnL Total: *{sign}{total_pnl:.2f}\u20ac*\n\n🤖 By ParraCorp-V2 Motor"
 
     # Split into chunks to stay under message limits
     chunk_size = 40
