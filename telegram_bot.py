@@ -111,6 +111,28 @@ def _tf_label(tf):
     return _map.get(str(tf), str(tf))
 
 
+
+
+def _pip_size(symbol):
+    """Pip size por instrumento (estandar MT4/MT5)."""
+    s = (symbol or "").upper()
+    if "JPY" in s: return 0.01
+    if "XAU" in s: return 0.10
+    if "XAG" in s: return 0.01
+    if "BTC" in s or "ETH" in s: return 1.0
+    if any(x in s for x in ("US30","NAS","SPX","US500","US100","GER","UK100","JP225")):
+        return 1.0
+    return 0.0001
+
+
+def _pips_for(symbol, entry_price, pnl_pct):
+    """Pips con signo (positivo = profit)."""
+    if entry_price <= 0: return 0
+    ps = _pip_size(symbol)
+    if ps <= 0: return 0
+    return int(entry_price * pnl_pct / 100.0 / ps)
+
+
 def send_signal_open(signal, chart_path=None):
     """Envia senal de apertura al grupo, con grafico si disponible."""
     if not is_configured():
@@ -186,26 +208,31 @@ def send_signal_close(signal):
     sig_id = signal.get("id", "")
     tf = _tf_label(signal.get("timeframe", "60"))
 
-    is_win = status in ("HIT_TP", "TRAILING_CLOSE")
-    emoji = "\u2705" if is_win else "\u274C"  # check / X
     result = "TP ALCANZADO" if status == "HIT_TP" else "SL ALCANZADO"
     if status == "TRAILING_CLOSE":
-        emoji = "\U0001F3AF"
         result = "TRAILING STOP (profit protegido)"
     elif status == "CANCELLED":
-        emoji = "\u26D4"
         result = "CANCELADA"
     elif status == "SWAP_CLOSE":
-        emoji = "\U0001F6E1" if pnl_usd >= 0 else "\u26A0"
         pnl_sign = f"+{pnl_usd:.2f}\u20ac" if pnl_usd >= 0 else f"{pnl_usd:.2f}\u20ac"
         result = f"SWAP PROTECT ({pnl_sign})"
     elif status == "TREND_PROTECT":
-        emoji = "\U0001F6E1" if pnl_usd >= 0 else "\u26A0"
         pnl_sign = f"+{pnl_usd:.2f}\u20ac" if pnl_usd >= 0 else f"{pnl_usd:.2f}\u20ac"
         result = f"TREND PROTECT ({pnl_sign})"
+    # Emoji segun PnL real (parcial con breakeven+ = win visual).
+    if status == "CANCELLED":
+        emoji = "\u26D4"
+    elif status == "TRAILING_CLOSE":
+        emoji = "\U0001F3AF"
+    elif status in ("SWAP_CLOSE", "TREND_PROTECT"):
+        emoji = "\U0001F6E1" if pnl_usd >= 0 else "\u26A0"
+    else:
+        emoji = "\u2705" if pnl_usd > 0 else "\u274C"
 
     pnl_emoji = "\U0001F4B0" if pnl_usd >= 0 else "\U0001F4B8"
     sign = "+" if pnl_pct >= 0 else ""
+    pips = _pips_for(sym, entry, pnl_pct)
+    pips_str = f"{'+' if pips >= 0 else ''}{pips}pip"
 
     text = (
         f"{emoji} <b>CIERRE {result}</b>\n"
@@ -213,7 +240,7 @@ def send_signal_close(signal):
         f"\U0001F4B9 <b>{sym}</b> | {tf}\n"
         f"\u2022 Entrada: <code>{_fmt_price(entry, sym)}</code>\n"
         f"\u2022 Salida: <code>{_fmt_price(exit_price, sym)}</code>\n"
-        f"{pnl_emoji} PnL: <b>{sign}{pnl_pct:.2f}%</b> ({sign}{pnl_usd:.2f}\u20ac)\n"
+        f"{pnl_emoji} PnL: <b>{sign}{pnl_pct:.2f}%</b> ({pips_str} | {sign}{pnl_usd:.2f}\u20ac)\n"
         f"\n"
         f"\U0001F916 By ParraCorp-V2 | {sig_id}"
     )

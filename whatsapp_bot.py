@@ -103,6 +103,27 @@ def _tf_label(tf):
     return _map.get(str(tf), str(tf))
 
 
+
+
+def _pip_size(symbol):
+    """Pip size por instrumento (estandar MT4/MT5)."""
+    s = (symbol or "").upper()
+    if "JPY" in s: return 0.01
+    if "XAU" in s: return 0.10
+    if "XAG" in s: return 0.01
+    if "BTC" in s or "ETH" in s: return 1.0
+    if any(x in s for x in ("US30","NAS","SPX","US500","US100","GER","UK100","JP225")):
+        return 1.0
+    return 0.0001
+
+
+def _pips_for(symbol, entry_price, pnl_pct):
+    """Pips con signo (positivo = profit)."""
+    if entry_price <= 0: return 0
+    ps = _pip_size(symbol)
+    if ps <= 0: return 0
+    return int(entry_price * pnl_pct / 100.0 / ps)
+
 def send_signal_open(signal, chart_path=None):
     """Envia senal de apertura, con grafico si disponible."""
     if not is_configured():
@@ -189,12 +210,19 @@ def send_signal_close(signal):
     elif status == "TREND_PROTECT":
         pnl_sign = f"+{pnl_usd:.2f}\u20ac" if pnl_usd >= 0 else f"{pnl_usd:.2f}\u20ac"
         result = f"TREND PROTECT ({pnl_sign})"
-    emoji = "\u2705" if status in ("HIT_TP", "TRAILING_CLOSE") else "\u274C"
-    if status == "TRAILING_CLOSE":
-        emoji = "\U0001F3AF"
+    # Emoji segun resultado real (PnL), no solo segun status.
+    # Un HIT_SL con PnL>0 (parcial, breakeven+) deve ser un win visual.
+    if status == "CANCELLED":
+        emoji = "\u26D4"          # 🚫
+    elif status == "TRAILING_CLOSE":
+        emoji = "\U0001F3AF"       # 🎯
     elif status in ("SWAP_CLOSE", "TREND_PROTECT"):
         emoji = "\U0001F6E1" if pnl_usd >= 0 else "\u26A0"
+    else:
+        emoji = "\u2705" if pnl_usd > 0 else "\u274C"
     sign = "+" if pnl_pct >= 0 else ""
+    pips = _pips_for(sym, entry, pnl_pct)
+    pips_str = f"{'+' if pips >= 0 else ''}{pips}pip"
 
     pnl_emoji = "\U0001F4B0" if pnl_pct >= 0 else "\U0001F4B8"
     text = (
@@ -203,7 +231,7 @@ def send_signal_close(signal):
         f"\U0001F4B9 *{sym}* | {tf}\n"
         f"\u2022 Entrada: `{_fmt_price(entry)}`\n"
         f"\u2022 Salida: `{_fmt_price(exit_price)}`\n"
-        f"{pnl_emoji} PnL: *{sign}{pnl_pct:.2f}%* ({sign}{pnl_usd:.2f}\u20ac)\n"
+        f"{pnl_emoji} PnL: *{sign}{pnl_pct:.2f}%* ({pips_str} | {sign}{pnl_usd:.2f}\u20ac)\n"
         f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
     )
 
