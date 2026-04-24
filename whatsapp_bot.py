@@ -122,22 +122,23 @@ def send_signal_open(signal, chart_path=None):
     lote_std = float(signal.get("lote_std", 0) or 0)
     sig_id = signal.get("id", "")
 
+    emoji = "\U0001F7E2" if action == "BUY" else "\U0001F534"
     arrow = "\u2B06" if action == "BUY" else "\u2B07"
     dir_text = "COMPRA" if action == "BUY" else "VENTA"
 
     text = (
-        f"{arrow} *SENAL {dir_text}*\n"
+        f"{emoji} *SENAL {dir_text}* {arrow}\n"
         f"\n"
-        f"*{sym}* | {tf}\n"
+        f"\U0001F4B9 *{sym}* | {tf}\n"
         f"\n"
-        f"Entrada: {_fmt_price(entry)}\n"
-        f"Stop Loss: {_fmt_price(sl)}\n"
-        f"Take Profit: {_fmt_price(tp)}\n"
-        f"R:R: *{rr:.1f}:1* | Conf: {conf}%\n"
+        f"\u2022 Entrada: `{_fmt_price(entry)}`\n"
+        f"\u2022 Stop Loss: `{_fmt_price(sl)}`\n"
+        f"\u2022 Take Profit: `{_fmt_price(tp)}`\n"
+        f"\u2022 R:R: *{rr:.1f}:1* | Conf: {conf}%\n"
     )
     lote_txt = f"{lote_std:.2f}" if lote_std >= 0.01 else "0.01"
     min_lot = signal.get("min_lot_applied", False)
-    text += f"Lote: *{lote_txt}*"
+    text += f"\u2022 Lote: *{lote_txt}*"
     if unidades > 0:
         text += f" ({unidades:.0f} uds)"
     if min_lot:
@@ -151,8 +152,8 @@ def send_signal_open(signal, chart_path=None):
             "atr2": "ATR Agresivo (SL sigue cada +0.5 ATR)",
         }
         ts_label = ts_map.get(trailing, trailing)
-        text += f"Trailing: *{ts_label}*\n"
-    text += f"\nBy ParraCorp-V2 | {sig_id}"
+        text += f"\u2022 Trailing: *{ts_label}*\n"
+    text += f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
 
     # Enviar con grafico si disponible
     import os
@@ -195,14 +196,15 @@ def send_signal_close(signal):
         emoji = "\U0001F6E1" if pnl_usd >= 0 else "\u26A0"
     sign = "+" if pnl_pct >= 0 else ""
 
+    pnl_emoji = "\U0001F4B0" if pnl_pct >= 0 else "\U0001F4B8"
     text = (
         f"{emoji} *CIERRE {result}*\n"
         f"\n"
-        f"*{sym}* | {tf}\n"
-        f"Entrada: {_fmt_price(entry)}\n"
-        f"Salida: {_fmt_price(exit_price)}\n"
-        f"PnL: *{sign}{pnl_pct:.2f}%* ({sign}{pnl_usd:.2f}\u20ac)\n"
-        f"\nBy ParraCorp-V2 | {sig_id}"
+        f"\U0001F4B9 *{sym}* | {tf}\n"
+        f"\u2022 Entrada: `{_fmt_price(entry)}`\n"
+        f"\u2022 Salida: `{_fmt_price(exit_price)}`\n"
+        f"{pnl_emoji} PnL: *{sign}{pnl_pct:.2f}%* ({sign}{pnl_usd:.2f}\u20ac)\n"
+        f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
     )
 
     _send_async(text)
@@ -221,16 +223,17 @@ def send_daily_summary(stats):
     pf = stats.get("profit_factor", 0)
     sign = "+" if pnl >= 0 else ""
 
+    pnl_emoji = "\U0001F4B0" if pnl >= 0 else "\U0001F4B8"
     text = (
-        f"*RESUMEN DIARIO*\n"
+        f"\U0001F4CA *RESUMEN DIARIO*\n"
         f"\n"
-        f"Operaciones: {wins + losses}\n"
-        f"Wins/Losses: {wins}W / {losses}L\n"
-        f"Win Rate: {wr:.0f}%\n"
-        f"Profit Factor: {pf:.2f}\n"
+        f"\u2022 Operaciones: {wins + losses}\n"
+        f"\u2022 Wins/Losses: {wins}W / {losses}L\n"
+        f"\u2022 Win Rate: {wr:.0f}%\n"
+        f"\u2022 Profit Factor: {pf:.2f}\n"
         f"\n"
-        f"PnL Total: *{sign}{pnl:.2f}\u20ac*\n"
-        f"\nBy ParraCorp-V2 Motor"
+        f"{pnl_emoji} PnL Total: *{sign}{pnl:.2f}\u20ac*\n"
+        f"\n\U0001F916 By ParraCorp-V2 Motor"
     )
 
     _send_async(text)
