@@ -1899,10 +1899,20 @@ _VALID_TFS = {"1", "3", "5", "15", "30", "60", "120", "240", "1D"}
 
 @app.route("/config/symbol-tf", methods=["GET"])
 def get_symbol_tf():
-    """Mapa {simbolo: TF_operativo}. Simbolos no presentes defaultan a '60'."""
+    """Mapa de TFs operativos.
+    - symbol_tf: solo overrides explicitos (lo que se persiste)
+    - effective: TF resuelto para cada simbolo de la watchlist (override o default)
+    """
+    overrides = cfg.state.get("symbol_tf", {}) or {}
+    default_tf = "60"
+    wl = cfg.state.get("watchlist", []) or []
+    wl_op = cfg.state.get("watchlist_opcional", []) or []
+    all_symbols = sorted(set(wl) | set(wl_op))
+    effective = {sym: overrides.get(sym, default_tf) for sym in all_symbols}
     return jsonify({
-        "symbol_tf": cfg.state.get("symbol_tf", {}),
-        "default": "60",
+        "symbol_tf": overrides,
+        "effective": effective,
+        "default": default_tf,
         "valid_tfs": sorted(_VALID_TFS, key=lambda t: (t == "1D", int(t) if t.isdigit() else 0)),
     })
 
