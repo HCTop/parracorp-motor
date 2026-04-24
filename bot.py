@@ -95,8 +95,12 @@ _features_history = {}  # {symbol: [last N features]}
 # === CONFLUENCE ENGINE (multi-simbolo) =========================================
 # Cada simbolo tiene su propio set de parametros, engine y state. Calibraciones
 # especificas por backtest para cada par + TF operativo.
-_CONFLUENCE_PARAMS = {
-    # XAUUSD: usa defaults actuales de la libreria (H1)
+#
+# _CONFLUENCE_DEFAULTS: valores "optimos" del backtest (immutables, hardcoded).
+# _CONFLUENCE_PARAMS:   params activos = defaults + overrides del usuario.
+#                       Se reconstruye en arranque y cuando POST /confluence/params.
+_CONFLUENCE_DEFAULTS = {
+    # XAUUSD: usa defaults de la libreria (H1, calibracion previa)
     "XAUUSD": CONF_DEFAULTS,
     # XAGUSD: calibracion M30 por backtest (HCTop 2023-2026)
     "XAGUSD": ConfluenceParams(
@@ -126,7 +130,34 @@ _CONFLUENCE_PARAMS = {
         min_bars_between=7,
     ),
 }
-_CONFLUENCE_SYMBOLS = set(_CONFLUENCE_PARAMS.keys())
+_CONFLUENCE_SYMBOLS = set(_CONFLUENCE_DEFAULTS.keys())
+
+# Params activos (defaults + overrides). Se populan en _rebuild_conf_params().
+_CONFLUENCE_PARAMS = {}
+
+
+def _rebuild_conf_params(sym=None):
+    """Reconstruye _CONFLUENCE_PARAMS mezclando defaults con overrides del usuario.
+    Si sym se especifica, solo rebuildea ese simbolo; si no, todos."""
+    from dataclasses import replace as _dc_replace
+    syms = [sym] if sym else list(_CONFLUENCE_DEFAULTS.keys())
+    overrides_all = cfg.state.get("confluence_params", {}) or {}
+    for s in syms:
+        base = _CONFLUENCE_DEFAULTS[s]
+        overrides = overrides_all.get(s, {}) or {}
+        if overrides:
+            try:
+                _CONFLUENCE_PARAMS[s] = _dc_replace(base, **overrides)
+            except Exception as e:
+                mlog("CONFL", f"{s} override invalido ({e}), uso defaults")
+                _CONFLUENCE_PARAMS[s] = base
+        else:
+            _CONFLUENCE_PARAMS[s] = base
+
+
+# Populacion inicial con defaults (antes de cfg.cargar). Se re-populara en startup.
+for _s in _CONFLUENCE_DEFAULTS:
+    _CONFLUENCE_PARAMS[_s] = _CONFLUENCE_DEFAULTS[_s]
 
 # TF operativo por defecto de cada simbolo de Confluence.
 # Solo se usa en arranque si el usuario no tiene override en cfg.state["symbol_tf"].
@@ -1713,8 +1744,8 @@ def _build_confluence_block_for_estado(sym):
     return block
 
 
-def _confluence_params_dump(sym):
-    p = _CONFLUENCE_PARAMS[sym]
+def _dump_params(p):
+    """Serializa un ConfluenceParams a dict."""
     return {
         "swing_lookback": p.swing_lookback,
         "min_structure_score": p.min_structure_score,
@@ -1741,6 +1772,14 @@ def _confluence_params_dump(sym):
         "max_trades_day": p.max_trades_day,
         "min_bars_between": p.min_bars_between,
     }
+
+
+def _confluence_params_dump(sym):
+    return _dump_params(_CONFLUENCE_PARAMS[sym])
+
+
+def _confluence_defaults_dump(sym):
+    return _dump_params(_CONFLUENCE_DEFAULTS[sym])
 
 
 @app.route("/confluence/status", methods=["GET"])
@@ -1773,6 +1812,7 @@ def confluence_status():
         return jsonify({"symbols": sorted(_CONFLUENCE_SYMBOLS), "per_sym": per_sym})
     state = _get_conf_state(sym)
     engine = _get_conf_engine(sym)
+    overrides = (cfg.state.get("confluence_params", {}) or {}).get(sym, {}) or {}
     return jsonify({
         "symbol": sym,
         "activo": state["activo"],
@@ -1782,7 +1822,9 @@ def confluence_status():
         "details": state.get("details", {}),
         "tf_default": _CONFLUENCE_TF_DEFAULTS.get(sym, "60"),
         "tf_actual": cfg.state.get("symbol_tf", {}).get(sym, _CONFLUENCE_TF_DEFAULTS.get(sym, "60")),
-        "params": _confluence_params_dump(sym),
+        "params": _confluence_params_dump(sym),          # efectivo (defaults + overrides)
+        "defaults": _confluence_defaults_dump(sym),       # optimo backtest (referencia)
+        "overrides": overrides,                           # solo los campos modificados por el user
         "symbols": sorted(_CONFLUENCE_SYMBOLS),
         "supertrend": {
             "m15_bull": engine.m15_st.bull,
@@ -1790,6 +1832,104 @@ def confluence_status():
             "m15_value": round(engine.m15_st.st_dn if engine.m15_st.bull else engine.m15_st.st_up, 2),
             "h1_value": round(engine.h1_st.st_dn if engine.h1_st.bull else engine.h1_st.st_up, 2),
         },
+    })
+
+
+@app.route("/confluence/params", methods=["POST"])
+def confluence_update_params():
+    """Actualiza parametros Confluence de un simbolo (merge parcial con overrides).
+    Query: ?sym=XAUUSD (default XAUUSD).
+    Body: {"sl_atr_mult": 2.5, "tp_rr": 1.8, "min_confirmations": 3, ...}
+    Los cambios se persisten en cfg.state["confluence_params"][sym] y
+    recrean el engine para aplicarlos inmediatamente (Supertrend reseteado)."""
+    from dataclasses import fields as _dc_fields
+    sym = request.args.get("sym", "XAUUSD").upper()
+    if sym not in _CONFLUENCE_SYMBOLS:
+        return jsonify({"error": f"{sym} no usa Confluence. Validos: {sorted(_CONFLUENCE_SYMBOLS)}"}), 404
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "body debe ser un objeto JSON de {campo: valor}"}), 400
+
+    # Map de campo -> tipo de ConfluenceParams
+    valid_fields = {f.name: f.type for f in _dc_fields(ConfluenceParams)}
+    invalid = [k for k in data.keys() if k not in valid_fields]
+    if invalid:
+        return jsonify({
+            "error": f"Campos invalidos: {invalid}",
+            "valid": sorted(valid_fields.keys()),
+        }), 400
+
+    # Coerce al tipo correcto (el JSON manda numeros como int/float indistintamente)
+    cleaned = {}
+    for k, v in data.items():
+        typ_name = valid_fields[k]
+        # dataclass field types pueden venir como strings dependiendo de __future__ annotations
+        if typ_name in ("int", int):
+            try:
+                cleaned[k] = int(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{k} debe ser int, recibido: {v!r}"}), 400
+        elif typ_name in ("float", float):
+            try:
+                cleaned[k] = float(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{k} debe ser float, recibido: {v!r}"}), 400
+        elif typ_name in ("bool", bool):
+            if isinstance(v, bool):
+                cleaned[k] = v
+            elif isinstance(v, str):
+                cleaned[k] = v.lower() in ("true", "1", "yes", "si", "on")
+            else:
+                cleaned[k] = bool(v)
+        else:
+            cleaned[k] = v
+
+    # Merge en cfg.state
+    cfg_overrides = cfg.state.setdefault("confluence_params", {})
+    sym_overrides = cfg_overrides.setdefault(sym, {})
+    sym_overrides.update(cleaned)
+    cfg.guardar()
+
+    # Reconstruir params activos y reset del engine de ese simbolo
+    _rebuild_conf_params(sym)
+    _confluence_engines[sym] = ConfluenceEngine(_CONFLUENCE_PARAMS[sym])
+    state = _get_conf_state(sym)
+    state["bar_index"] = 0
+    state["last_signal"] = None
+    state["details"] = {}
+
+    mlog("CONFL", f"{sym} params actualizados: {cleaned}")
+    return jsonify({
+        "ok": True,
+        "symbol": sym,
+        "applied": cleaned,
+        "params": _confluence_params_dump(sym),
+        "overrides": sym_overrides,
+    })
+
+
+@app.route("/confluence/params/reset", methods=["POST"])
+def confluence_params_reset():
+    """Borra overrides y vuelve a los defaults optimos del backtest.
+    Query: ?sym=XAUUSD (default XAUUSD)."""
+    sym = request.args.get("sym", "XAUUSD").upper()
+    if sym not in _CONFLUENCE_SYMBOLS:
+        return jsonify({"error": f"{sym} no usa Confluence. Validos: {sorted(_CONFLUENCE_SYMBOLS)}"}), 404
+    overrides_all = cfg.state.setdefault("confluence_params", {})
+    removed = overrides_all.pop(sym, None)
+    cfg.guardar()
+    _rebuild_conf_params(sym)
+    _confluence_engines[sym] = ConfluenceEngine(_CONFLUENCE_PARAMS[sym])
+    state = _get_conf_state(sym)
+    state["bar_index"] = 0
+    state["last_signal"] = None
+    state["details"] = {}
+    mlog("CONFL", f"{sym} params RESETEADOS al default (removidos overrides: {removed})")
+    return jsonify({
+        "ok": True,
+        "symbol": sym,
+        "removed": removed or {},
+        "params": _confluence_params_dump(sym),
     })
 
 
@@ -2643,6 +2783,8 @@ if cfg.WA_GROUP_NAME:
 
 # Asegurar TF defaults para simbolos de Confluence si el usuario no tiene override.
 _ensure_confluence_tf_defaults()
+# Reconstruir params de Confluence aplicando overrides persistidos en config.
+_rebuild_conf_params()
 
 if __name__ != "__main__":
     # Gunicorn: iniciar motor en hilo

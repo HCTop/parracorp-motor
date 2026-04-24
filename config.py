@@ -213,6 +213,10 @@ state = {
     # El motor SUSCRIBE a todos los TFs que necesite; solo EMITE senal cuando
     # el TF del ciclo coincide con el configurado aqui.
     "symbol_tf": {},
+    # Overrides de parametros de Confluence por simbolo.
+    # {sym: {field: value, ...}} - solo los campos modificados por el usuario.
+    # Los valores vacios significan "usar default del backtest".
+    "confluence_params": {},
     # IA
     "ia_modo": "autonomo",  # "autonomo" = IA activa, "off" = solo modelo estadistico
     "ia_modelo": "gemini-2.5-flash",
@@ -269,7 +273,7 @@ def guardar():
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump({k: state[k] for k in [
                 "motor_activo", "capital", "riesgo_pct", "max_ops", "rr_minimo",
-                "watchlist", "watchlist_opcional", "symbol_tf",
+                "watchlist", "watchlist_opcional", "symbol_tf", "confluence_params",
                 "ia_modo", "ia_motores",
                 "push_token", "modo_conservador", "apalancamiento", "avoid_swap", "divisa_base",
             ]}, f, indent=2)
