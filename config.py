@@ -209,6 +209,10 @@ state = {
     # Watchlist
     "watchlist": list(WL_RECOMENDADA),
     "watchlist_opcional": [],  # Pares opcionales activados por el usuario
+    # TF operativo por simbolo. Si un simbolo no aparece aqui, default = "60" (H1).
+    # El motor SUSCRIBE a todos los TFs que necesite; solo EMITE senal cuando
+    # el TF del ciclo coincide con el configurado aqui.
+    "symbol_tf": {},
     # IA
     "ia_modo": "autonomo",  # "autonomo" = IA activa, "off" = solo modelo estadistico
     "ia_modelo": "gemini-2.5-flash",
@@ -265,7 +269,7 @@ def guardar():
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump({k: state[k] for k in [
                 "motor_activo", "capital", "riesgo_pct", "max_ops", "rr_minimo",
-                "watchlist", "watchlist_opcional",
+                "watchlist", "watchlist_opcional", "symbol_tf",
                 "ia_modo", "ia_motores",
                 "push_token", "modo_conservador", "apalancamiento", "avoid_swap", "divisa_base",
             ]}, f, indent=2)

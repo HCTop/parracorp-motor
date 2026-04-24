@@ -341,6 +341,15 @@ def _on_new_bar(symbol, tf):
             }
 
         # === CAPA 8: Emision de senal ===
+        # Compuerta por TF operativo: cada simbolo tiene un TF configurado
+        # (default "60"). Si el TF del ciclo no coincide, no se emite la senal
+        # aunque la logica haya dicho BUY/SELL. Indicadores y caches siguen
+        # computandose con normalidad.
+        _target_tf = cfg.state.get("symbol_tf", {}).get(symbol, "60")
+        if result["action"] in ("BUY", "SELL") and tf != _target_tf:
+            mlog("GATE", f"{symbol}:{tf} {result['action']} bloqueado (TF operativo={_target_tf})")
+            result["action"] = "WAIT"
+            result["reason"] = f"[GATE] {tf} no es TF operativo ({_target_tf}) para {symbol}"
         if result["action"] in ("BUY", "SELL") and not result.get("blocked"):
             valid, reason = validar_senal(
                 result["action"], result["entry"],
@@ -1882,6 +1891,50 @@ def update_config():
         cfg.state["push_token"] = data["push_token"]
     cfg.guardar()
     return jsonify({"ok": True})
+
+
+# --- TF operativo por simbolo ---
+_VALID_TFS = {"1", "3", "5", "15", "30", "60", "120", "240", "1D"}
+
+
+@app.route("/config/symbol-tf", methods=["GET"])
+def get_symbol_tf():
+    """Mapa {simbolo: TF_operativo}. Simbolos no presentes defaultan a '60'."""
+    return jsonify({
+        "symbol_tf": cfg.state.get("symbol_tf", {}),
+        "default": "60",
+        "valid_tfs": sorted(_VALID_TFS, key=lambda t: (t == "1D", int(t) if t.isdigit() else 0)),
+    })
+
+
+@app.route("/config/symbol-tf", methods=["POST"])
+def update_symbol_tf():
+    """Actualiza TF operativo por simbolo.
+    Body: {"XAUUSD": "60", "EURUSD": "240", ...}  (reemplaza el mapa completo)
+    o     {"set": {"XAUUSD": "60"}}                (merge parcial)
+    o     {"remove": ["XAUUSD"]}                   (vuelve a default)
+    """
+    data = request.json or {}
+    current = dict(cfg.state.get("symbol_tf", {}))
+    if "set" in data or "remove" in data:
+        for sym, tf in (data.get("set") or {}).items():
+            if tf not in _VALID_TFS:
+                return jsonify({"ok": False, "error": f"TF invalido para {sym}: {tf}. Validos: {sorted(_VALID_TFS)}"}), 400
+            current[sym.upper()] = tf
+        for sym in (data.get("remove") or []):
+            current.pop(sym.upper(), None)
+    else:
+        # Reemplazo completo
+        new_map = {}
+        for sym, tf in data.items():
+            if tf not in _VALID_TFS:
+                return jsonify({"ok": False, "error": f"TF invalido para {sym}: {tf}. Validos: {sorted(_VALID_TFS)}"}), 400
+            new_map[sym.upper()] = tf
+        current = new_map
+    cfg.state["symbol_tf"] = current
+    cfg.guardar()
+    mlog("CONFIG", f"symbol_tf actualizado: {current}")
+    return jsonify({"ok": True, "symbol_tf": current})
 
 
 # === Ranking ===
