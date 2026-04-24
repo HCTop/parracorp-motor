@@ -2106,6 +2106,7 @@ def wa_qr():
 def wa_qr_text():
     """Proxy del QR como JSON (para debug / clientes sin navegador)."""
     import requests
+    from flask import Response
     try:
         r = requests.get("http://127.0.0.1:3001/wa/qr/text", timeout=5)
         return Response(r.content, status=r.status_code,
