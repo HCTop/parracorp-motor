@@ -19,6 +19,7 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     Browsers,
+    fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const express = require('express');
@@ -88,7 +89,19 @@ async function startBaileys() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
+        // Pide a la API de Baileys la version vigente del protocolo WhatsApp Web,
+        // evita rechazos del servidor (Connection Failure 405) por appVersion obsoleta.
+        let waVersion;
+        try {
+            const v = await fetchLatestBaileysVersion();
+            waVersion = v.version;
+            console.log(`[WA] Usando WA Web version ${waVersion.join('.')} (latest=${v.isLatest})`);
+        } catch (e) {
+            console.log('[WA] No pude obtener version latest:', e.message, '- uso default de la lib');
+        }
+
         sock = makeWASocket({
+            version: waVersion,
             auth: state,
             logger: logger,
             printQRInTerminal: false,
