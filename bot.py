@@ -34,7 +34,7 @@ from brain import analyze as brain_analyze, ia_tokens, ia_modelo_actual, ia_heal
 from risk_engine import calcular_lote, validar_senal, ajustar_riesgo_por_regimen
 from signals import (emit as emit_signal, check_prices, get_active, get_history,
                      get_stats, cancel as cancel_signal, close_signal, vote as vote_signal,
-                     delete_from_history)
+                     delete_from_history, modify_signal)
 from push import send as push_send, send_signal as push_signal, send_close as push_close
 
 # v3.1 modules
@@ -1611,6 +1611,38 @@ def signal_cancel(sig_id):
         tg.send_signal_close(result)
         wa.send_signal_close(result)
     return jsonify({"ok": result is not None})
+
+
+@app.route("/signals/modify/<sig_id>", methods=["POST"])
+def signal_modify(sig_id):
+    """Actualiza SL/TP de una senal activa. Body JSON: {sl, tp} (ambos opcionales).
+    Cambio aditivo: solo modifica los campos sl/tp; no toca el flujo existente."""
+    try:
+        data = request.json or {}
+        new_sl = data.get("sl")
+        new_tp = data.get("tp")
+        if new_sl is None and new_tp is None:
+            return jsonify({"ok": False, "error": "sl o tp requerido"})
+        sig = modify_signal(sig_id,
+                            new_sl=float(new_sl) if new_sl is not None else None,
+                            new_tp=float(new_tp) if new_tp is not None else None)
+        if not sig:
+            return jsonify({"ok": False, "error": "Senal no encontrada o no activa"})
+        # Notificacion best-effort (no rompe si falla)
+        try:
+            msg = (f"✏️ SL/TP actualizado {sig['symbol']} {sig['action']} [{sig['id']}]\n"
+                   f"SL: {sig['sl']:.5f}  TP: {sig['tp']:.5f}")
+            tg.send_custom(msg)
+        except Exception as e:
+            mlog("MODIFY", f"Telegram error: {e}")
+        try:
+            wa.send_custom(msg)
+        except Exception as e:
+            mlog("MODIFY", f"WhatsApp error: {e}")
+        return jsonify({"ok": True, "signal": sig})
+    except Exception as e:
+        mlog("MODIFY", f"Error: {e}")
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/signals/vote/<sig_id>", methods=["POST"])

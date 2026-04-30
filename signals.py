@@ -388,6 +388,35 @@ def close_signal(signal_id, current_price=None, status="CANCELLED"):
     return None
 
 
+def modify_signal(signal_id, new_sl=None, new_tp=None):
+    """Actualiza SL y/o TP de una senal ACTIVA.
+
+    Devuelve la senal actualizada o None si no existe / no esta activa.
+    Cambio aditivo: solo toca campos sl/tp + log de auditoria, no afecta el flujo
+    existente de check_prices ni emit/close.
+    """
+    with _lock:
+        for sig in _signals:
+            if sig["id"] != signal_id or sig["status"] != "ACTIVE":
+                continue
+            old_sl, old_tp = sig.get("sl"), sig.get("tp")
+            if new_sl is not None and new_sl > 0:
+                sig["sl"] = round(float(new_sl), 6)
+            if new_tp is not None and new_tp > 0:
+                sig["tp"] = round(float(new_tp), 6)
+            _save()
+            mlog("SIGNAL", f"MODIFY {sig['id']} {sig['symbol']} "
+                          f"SL {old_sl}->{sig['sl']} TP {old_tp}->{sig['tp']}")
+            _append_trade_event("TRADE_MODIFY", {
+                "id": sig["id"],
+                "symbol": sig["symbol"],
+                "old_sl": old_sl, "new_sl": sig["sl"],
+                "old_tp": old_tp, "new_tp": sig["tp"],
+            })
+            return sig
+    return None
+
+
 def cancel(signal_id, current_price=None):
     return close_signal(signal_id, current_price, "CANCELLED")
 
