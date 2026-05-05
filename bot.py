@@ -2063,6 +2063,189 @@ def ia_log_txt():
     from brain import IA_DECISIONS_LOG
     from signals import get_history, get_active
     import os
+# --- Senales externas (cTrader, TradingView, etc.) ----------------------------
+@app.route("/external_signal", methods=["POST"])
+def external_signal():
+    """
+    Recibe senal externa (cTrader, TradingView webhook, etc.).
+    Distribuye a Telegram + WhatsApp + FCM y la registra en historial.
+
+    JSON esperado:
+    {
+      "source": "cTrader-PMExAO",
+      "symbol": "XAUUSD",
+      "timeframe": "5",
+      "action": "BUY" | "SELL",
+      "entry": 4555.50,
+      "sl": 4540.00,        // opcional, si 0 se calcula
+      "tp": 4570.00,        // opcional, si 0 se calcula
+      "reason": "MA cross",
+      "confidence": 70,     // opcional
+      "token": "..."        // opcional, valida con env EXTERNAL_SIGNAL_TOKEN
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+
+        # Auth opcional
+        expected_token = os.environ.get("EXTERNAL_SIGNAL_TOKEN", "")
+        if expected_token:
+            provided = data.get("token", "") or request.headers.get("X-Signal-Token", "")
+            if provided != expected_token:
+                mlog("EXTERNAL", f"Token invalido (recibido: {provided[:6]}...)")
+                return jsonify({"status": "error", "msg": "invalid token"}), 401
+
+        symbol = (data.get("symbol", "") or "").upper().replace("/", "")
+        action = (data.get("action", "") or "").upper()
+        if not symbol or action not in ("BUY", "SELL"):
+            return jsonify({"status": "error", "msg": "missing symbol or invalid action"}), 400
+
+        # Precio: usa el del payload, o el actual si no llega
+        try:
+            entry_price = float(data.get("entry") or 0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        if entry_price <= 0:
+            entry_price = float(get_price(symbol) or 0)
+        if entry_price <= 0:
+            return jsonify({"status": "error", "msg": "no price available"}), 400
+
+        # SL/TP: usa los del payload, o calcula por defecto (1% / 2%)
+        try:
+            sl = float(data.get("sl") or 0)
+        except (TypeError, ValueError):
+            sl = 0.0
+        try:
+            tp = float(data.get("tp") or 0)
+        except (TypeError, ValueError):
+            tp = 0.0
+        if sl <= 0:
+            sl = entry_price * (0.99 if action == "BUY" else 1.01)
+        if tp <= 0:
+            tp = entry_price * (1.02 if action == "BUY" else 0.98)
+
+        timeframe = str(data.get("timeframe", "60"))
+        risk_pct = float(data.get("risk_pct", cfg.state.get("riesgo_pct", 1.0)))
+        confidence = int(data.get("confidence", 70))
+        source = data.get("source", "external")
+        reason = f"[{source}] {data.get('reason', 'external signal')}"
+
+        # Emitir senal
+        sig = emit_signal(
+            symbol=symbol,
+            action=action,
+            entry_price=entry_price,
+            sl=sl,
+            tp=tp,
+            timeframe=timeframe,
+            risk_pct=risk_pct,
+            confidence=confidence,
+            reason=reason,
+        )
+
+        if sig is None:
+            mlog("EXTERNAL", f"Rechazada (duplicado): {symbol} {action}")
+            return jsonify({"status": "rejected", "msg": "duplicate active signal"}), 200
+
+        # Distribuir a canales
+        chart_path = None
+        try:
+            chart_path = generate_signal_chart(sig)
+        except Exception as e:
+            mlog("EXTERNAL", f"chart error: {e}")
+
+        try:
+            tg.send_signal_open(sig, chart_path=chart_path)
+        except Exception as e:
+            mlog("TG", f"external send error: {e}")
+        try:
+            wa.send_signal_open(sig, chart_path=chart_path)
+        except Exception as e:
+            mlog("WA", f"external send error: {e}")
+        try:
+            push_signal(sig)
+        except Exception as e:
+            mlog("PUSH", f"external send error: {e}")
+
+        mlog("EXTERNAL", f"Senal recibida: {symbol} {action} @ {entry_price} (SL={sl} TP={tp})",
+             {"id": sig.get("id"), "source": source})
+
+        return jsonify({"status": "ok", "signal": sig})
+
+    except Exception as e:
+        mlog("EXTERNAL", f"Error: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
+
+
+@app.route("/external_close", methods=["POST"])
+def external_close():
+    """
+    Notifica cierre de operacion desde fuente externa (cBot cTrader).
+
+    JSON esperado:
+    {
+      "source": "cTrader-ValhallaV4",
+      "ticket": "...",      // opcional, ID externo
+      "symbol": "XAUUSD",
+      "action": "BUY" | "SELL",
+      "exit": 4570.00,
+      "reason": "TP1" | "TP2" | "TP3" | "SL" | "BE" | "flip" | "manual",
+      "profit_money": 12.50,
+      "token": "..."
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+
+        expected_token = os.environ.get("EXTERNAL_SIGNAL_TOKEN", "")
+        if expected_token:
+            provided = data.get("token", "") or request.headers.get("X-Signal-Token", "")
+            if provided != expected_token:
+                return jsonify({"status": "error", "msg": "invalid token"}), 401
+
+        symbol = (data.get("symbol", "") or "").upper().replace("/", "")
+        reason = data.get("reason", "manual")
+        try:
+            exit_price = float(data.get("exit") or 0)
+        except (TypeError, ValueError):
+            exit_price = 0.0
+        try:
+            profit = float(data.get("profit_money") or 0)
+        except (TypeError, ValueError):
+            profit = 0.0
+
+        # Buscar senal activa de este simbolo y cerrarla
+        active = get_active()
+        target = next((s for s in active if s.get("symbol") == symbol), None)
+        if target:
+            cancel_signal(target["id"], current_price=exit_price or get_price(symbol))
+            closed = get_by_id(target["id"])
+            if closed:
+                closed["exit_price"] = exit_price
+                closed["close_reason"] = reason
+                closed["profit_money"] = profit
+                try: tg.send_signal_close(closed)
+                except Exception as e: mlog("TG", f"close send error: {e}")
+                try: wa.send_signal_close(closed)
+                except Exception as e: mlog("WA", f"close send error: {e}")
+                try: push_close(closed)
+                except Exception as e: mlog("PUSH", f"close send error: {e}")
+
+        mlog("EXTERNAL", f"Cierre: {symbol} {reason} @ {exit_price} pnl={profit}",
+             {"source": data.get("source", "external")})
+
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        mlog("EXTERNAL", f"Close error: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
+
+
+# --- Exportar CSV ---
+@app.route("/export/csv", methods=["GET"])
+def export_csv():
+    """Export signal history as CSV file."""
+    import csv
+    import io as csv_io
     from flask import Response
 
     if not os.path.exists(IA_DECISIONS_LOG):
