@@ -2196,7 +2196,11 @@ def external_signal():
         except Exception as e:
             mlog("WA", f"external send error: {e}")
         try:
-            push_signal(sig)
+            token = cfg.state.get("push_token", "")
+            if token:
+                push_signal(token, sig)
+            else:
+                mlog("PUSH", "Sin push_token registrado - push omitido")
         except Exception as e:
             mlog("PUSH", f"external send error: {e}")
 
@@ -2261,7 +2265,9 @@ def external_close():
                 except Exception as e: mlog("TG", f"close send error: {e}")
                 try: wa.send_signal_close(closed)
                 except Exception as e: mlog("WA", f"close send error: {e}")
-                try: push_close(closed)
+                try:
+                    tok = cfg.state.get("push_token", "")
+                    if tok: push_close(tok, closed)
                 except Exception as e: mlog("PUSH", f"close send error: {e}")
 
         mlog("EXTERNAL", f"Cierre: {symbol} {reason} @ {exit_price} pnl={profit}",

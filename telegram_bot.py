@@ -133,6 +133,21 @@ def _pips_for(symbol, entry_price, pnl_pct):
     return int(entry_price * pnl_pct / 100.0 / ps)
 
 
+def _extract_source(signal):
+    """Devuelve el nombre de la fuente (signal_name o el primer [X] del reason).
+    Para senales internas devuelve 'ParraCorp Motor'."""
+    src = signal.get("signal_name") or signal.get("source")
+    if src and src not in ("external", "internal"):
+        return src
+    reason = signal.get("reason", "") or ""
+    if reason.startswith("[") and "]" in reason:
+        end = reason.index("]")
+        candidate = reason[1:end].strip()
+        if candidate:
+            return candidate
+    return "ParraCorp Motor"
+
+
 def send_signal_open(signal, chart_path=None):
     """Envia senal de apertura al grupo, con grafico si disponible."""
     if not is_configured():
@@ -183,7 +198,7 @@ def send_signal_open(signal, chart_path=None):
         }
         ts_label = ts_map.get(trailing, trailing)
         text += f"\u2022 Trailing: <b>{ts_label}</b>\n"
-    text += f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
+    text += f"\n\U0001F916 By {_extract_source(signal)} | {sig_id}"
 
     # Enviar con grafico si disponible
     if chart_path and os.path.exists(chart_path):
@@ -242,7 +257,7 @@ def send_signal_close(signal):
         f"\u2022 Salida: <code>{_fmt_price(exit_price, sym)}</code>\n"
         f"{pnl_emoji} PnL: <b>{sign}{pnl_pct:.2f}%</b> ({pips_str} | {sign}{pnl_usd:.2f}\u20ac)\n"
         f"\n"
-        f"\U0001F916 By ParraCorp-V2 | {sig_id}"
+        f"\U0001F916 By {_extract_source(signal)} | {sig_id}"
     )
 
     _send_async(text)

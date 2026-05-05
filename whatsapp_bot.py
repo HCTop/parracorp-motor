@@ -103,6 +103,21 @@ def _tf_label(tf):
     return _map.get(str(tf), str(tf))
 
 
+def _extract_source(signal):
+    """Devuelve la fuente de la senal (signal_name o [X] del reason).
+    Senales internas: 'ParraCorp Motor'."""
+    src = signal.get("signal_name") or signal.get("source")
+    if src and src not in ("external", "internal"):
+        return src
+    reason = signal.get("reason", "") or ""
+    if reason.startswith("[") and "]" in reason:
+        end = reason.index("]")
+        candidate = reason[1:end].strip()
+        if candidate:
+            return candidate
+    return "ParraCorp Motor"
+
+
 
 
 def _pip_size(symbol):
@@ -174,7 +189,7 @@ def send_signal_open(signal, chart_path=None):
         }
         ts_label = ts_map.get(trailing, trailing)
         text += f"\u2022 Trailing: *{ts_label}*\n"
-    text += f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
+    text += f"\n\U0001F916 By {_extract_source(signal)} | {sig_id}"
 
     # Enviar con grafico si disponible
     import os
@@ -232,7 +247,7 @@ def send_signal_close(signal):
         f"\u2022 Entrada: `{_fmt_price(entry)}`\n"
         f"\u2022 Salida: `{_fmt_price(exit_price)}`\n"
         f"{pnl_emoji} PnL: *{sign}{pnl_pct:.2f}%* ({pips_str} | {sign}{pnl_usd:.2f}\u20ac)\n"
-        f"\n\U0001F916 By ParraCorp-V2 | {sig_id}"
+        f"\n\U0001F916 By {_extract_source(signal)} | {sig_id}"
     )
 
     _send_async(text)
