@@ -251,6 +251,14 @@ def _on_new_bar(symbol, tf):
                 _motor_off_log_ts = now
             return
 
+        # Check modo "solo señales externas" (no analisis interno)
+        if cfg.state.get("external_only_mode", False):
+            now = time.time()
+            if now - _motor_off_log_ts > 300:
+                mlog("MOTOR", "Modo SOLO EXTERNAS - sin analisis interno")
+                _motor_off_log_ts = now
+            return
+
         snapshot = get_snapshot(symbol, tf)
         if not snapshot:
             now = time.time()
@@ -1745,6 +1753,29 @@ def ia_toggle():
     return jsonify({"ia_modo": cfg.state["ia_modo"]})
 
 
+@app.route("/setexternalonly", methods=["GET", "POST"])
+def setexternalonly():
+    """Activa/desactiva modo 'solo señales externas'.
+    En este modo el motor NO analiza ni genera señales propias,
+    solo retransmite las que llegan via /external_signal.
+    Query: ?enabled=1|0  (sin parametro = toggle)
+    """
+    val = request.args.get("enabled", "")
+    if val in ("1", "true", "yes", "on"):
+        cfg.state["external_only_mode"] = True
+    elif val in ("0", "false", "no", "off"):
+        cfg.state["external_only_mode"] = False
+    else:
+        cfg.state["external_only_mode"] = not cfg.state.get("external_only_mode", False)
+    cfg.guardar()
+    status = "SOLO EXTERNAS" if cfg.state["external_only_mode"] else "AUTONOMO"
+    mlog("MOTOR", f"Modo: {status}")
+    return jsonify({
+        "external_only_mode": cfg.state["external_only_mode"],
+        "status": status,
+    })
+
+
 # === CONFLUENCE CONTROL ENDPOINTS =============================================
 
 def _build_confluence_block_for_estado(sym):
@@ -2127,8 +2158,9 @@ def external_signal():
         timeframe = str(data.get("timeframe", "60"))
         risk_pct = float(data.get("risk_pct", cfg.state.get("riesgo_pct", 1.0)))
         confidence = int(data.get("confidence", 70))
-        source = data.get("source", "external")
-        reason = f"[{source}] {data.get('reason', 'external signal')}"
+        signal_name = data.get("signal_name") or data.get("source") or "external"
+        source = signal_name
+        reason = f"[{signal_name}] {data.get('reason', 'external signal')}"
 
         # Emitir senal
         sig = emit_signal(
