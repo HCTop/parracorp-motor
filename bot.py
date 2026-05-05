@@ -1446,6 +1446,7 @@ def _build_estado(sym, tf):
         # Motor
         "motor_ok": cfg.state.get("motor_ok", False),
         "motor_activo": cfg.state.get("motor_activo", True),
+        "external_only_mode": cfg.state.get("external_only_mode", False),
         "ultimo_ciclo": cfg.state.get("ultimo_ciclo", "--"),
         "ts_ciclo": cfg.state.get("ts_ciclo", 0),
         # Config
